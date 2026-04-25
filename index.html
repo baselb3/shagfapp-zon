@@ -927,7 +927,14 @@ async function doLogin(){
 
     // We're authenticated. Load shared data and resolve current user's permissions.
     await loadData();
-    const user=USERS[usernameInput];
+    let user=USERS[usernameInput];
+    // Recovery path: if the default admin authenticated but their profile is missing
+    // from Firestore (e.g. an aborted earlier setup), seed defaults now.
+    if(!user && usernameInput==='shagaf2024'){
+      await firstTimeSeed();
+      await loadData();
+      user=USERS[usernameInput];
+    }
     if(!user){
       // Auth account exists but no profile in USERS map — admin must add one
       await auth.signOut();
