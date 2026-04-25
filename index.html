@@ -898,20 +898,27 @@ async function doLogin(){
     try{
       await auth.signInWithEmailAndPassword(email,pw);
     }catch(authErr){
-      // Bootstrap path: only allowed for the default admin credentials, only if app is empty
-      if(authErr.code==='auth/user-not-found' || authErr.code==='auth/invalid-credential' || authErr.code==='auth/invalid-login-credentials'){
-        if(usernameInput==='shagaf2024' && pw==='shagaf2024'){
-          // Check Firestore is actually empty before bootstrapping
-          const probe=await db.collection('app').doc('users').get();
-          if(!probe.exists){
-            // First run — create the admin auth account, then seed
-            await auth.createUserWithEmailAndPassword(email,pw);
-            await firstTimeSeed();
-          }else{
-            throw authErr;
-          }
-        }else{
+      // Bootstrap path: only allowed for the default admin credentials.
+      // If the admin auth account doesn't exist yet, create it (which auto-signs
+      // us in) and then seed Firestore. We can't probe Firestore *before* sign-in
+      // because security rules block unauthenticated reads.
+      const invalidCreds = authErr.code==='auth/user-not-found'
+                        || authErr.code==='auth/invalid-credential'
+                        || authErr.code==='auth/invalid-login-credentials'
+                        || authErr.code==='auth/wrong-password';
+      if(invalidCreds && usernameInput==='shagaf2024' && pw==='shagaf2024'){
+        try{
+          await auth.createUserWithEmailAndPassword(email,pw);
+        }catch(createErr){
+          // Already exists -> original error was a real wrong password. Re-throw.
           throw authErr;
+        }
+        // Auto-signed in by createUser. Seed defaults if not already seeded.
+        try{
+          const probe=await db.collection('app').doc('users').get();
+          if(!probe.exists) await firstTimeSeed();
+        }catch(seedErr){
+          console.error('Seed failed:',seedErr);
         }
       }else{
         throw authErr;
