@@ -795,7 +795,9 @@ async function firstTimeSeed(){
       };
     }
     batch.set(db.collection('app').doc('users'),  {map:usersMap});
-    batch.set(db.collection('app').doc('config'), {currentCity:'riyadh', lang:'ar', pricing:JSON.parse(JSON.stringify(PRICING_TABLE)), emoji_system:JSON.parse(JSON.stringify(EMOJI_SYSTEM))});
+    // PRICING is a 2D array (rows × columns); Firestore disallows nested arrays,
+    // so we serialize it. emoji_system is array-of-objects which is fine.
+    batch.set(db.collection('app').doc('config'), {currentCity:'riyadh', lang:'ar', pricingJSON:JSON.stringify(PRICING_TABLE), emoji_system:JSON.parse(JSON.stringify(EMOJI_SYSTEM))});
     batch.set(db.collection('app').doc('history'),{list:[]});
     await batch.commit();
   }finally{
@@ -830,7 +832,12 @@ async function loadData(){
       const c=configD.data();
       if(c.currentCity)currentCity=c.currentCity;
       if(c.lang)lang=c.lang;
-      if(Array.isArray(c.pricing)&&c.pricing.length)PRICING.splice(0,PRICING.length,...c.pricing);
+      if(c.pricingJSON){
+        try{
+          const saved=JSON.parse(c.pricingJSON);
+          if(Array.isArray(saved)&&saved.length)PRICING.splice(0,PRICING.length,...saved);
+        }catch(_){}
+      }
       if(Array.isArray(c.emoji_system)&&c.emoji_system.length){
         EMOJI_SYSTEM.splice(0,EMOJI_SYSTEM.length,...c.emoji_system);
         buildEmojiMap();
@@ -864,7 +871,7 @@ async function _flushSave(){
     batch.set(db.collection('app').doc('teams'),  {list:TEAMS});
     batch.set(db.collection('app').doc('users'),  {map:USERS});
     batch.set(db.collection('app').doc('cities'), {list:CITIES});
-    batch.set(db.collection('app').doc('config'), {currentCity, lang, pricing:PRICING, emoji_system:EMOJI_SYSTEM});
+    batch.set(db.collection('app').doc('config'), {currentCity, lang, pricingJSON:JSON.stringify(PRICING), emoji_system:EMOJI_SYSTEM});
     await batch.commit();
   }catch(e){
     console.error('saveData failed:',e);
