@@ -2870,30 +2870,9 @@ buildEmojiMap();
 buildPriceSessionsOptions();
 setLang(lang);
 
-// If the user has an existing Firebase Auth session (e.g. didn't log out last time),
-// auto-login by reusing the username portion of their email.
-auth.onAuthStateChanged(async (fbUser)=>{
-  if(!fbUser || currentUser) return;       // not signed in, or we already handled login
-  const email=fbUser.email||'';
-  const username=email.split('@')[0];
-  if(!username)return;
-  try{
-    await loadData();
-    const u=USERS[username];
-    if(!u){await auth.signOut();return;}
-    currentUser=u;
-    await loadHistory();
-    document.getElementById('loginOverlay').style.display='none';
-    document.getElementById('userLabel').textContent='👤 '+(lang==='ar'?u.name_ar:u.name_en);
-    const rb=document.getElementById('roleBadge');
-    rb.textContent=t(u.role==='admin'?'admin':'viewer');
-    rb.className='role-badge '+(u.role==='admin'?'role-admin':'role-viewer');
-    if(can('edit_zones'))document.getElementById('drawModeBtn').style.display='block';
-    populateCitySelect();
-    setLang(lang);
-    if(!map)initMap();
-  }catch(e){console.error('Auto-login failed:',e);}
-});
+// Always require an explicit login each time the page loads.
+// Sign out any leftover Firebase Auth session so the login screen actually shows.
+auth.signOut().catch(()=>{});
 </script>
 </body>
 </html>
