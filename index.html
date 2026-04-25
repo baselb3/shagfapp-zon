@@ -855,12 +855,16 @@ async function loadData(){
   }
 }
 
-// saveData is called by every CRUD op. We debounce by 250ms so a burst of edits
-// becomes one Firestore write batch.
-function saveData(){
-  if(!currentUser)return;          // not logged in — don't write
-  if(_saveTimer)clearTimeout(_saveTimer);
-  _saveTimer=setTimeout(_flushSave, 250);
+// saveData() debounces writes by 250ms so rapid edits batch into one Firestore call.
+// Pass `true` to flush immediately — critical for user CRUD where the admin may
+// close the tab seconds after saving.
+function saveData(immediate){
+  if(!currentUser)return Promise.resolve();
+  if(_saveTimer){clearTimeout(_saveTimer);_saveTimer=null;}
+  if(immediate)return _flushSave();
+  return new Promise(resolve=>{
+    _saveTimer=setTimeout(async()=>{ _saveTimer=null; await _flushSave(); resolve(); }, 250);
+  });
 }
 async function _flushSave(){
   _saveTimer=null;
@@ -876,6 +880,7 @@ async function _flushSave(){
   }catch(e){
     console.error('saveData failed:',e);
     toast(lang==='ar'?'⚠️ فشل الحفظ':'⚠️ Save failed');
+    throw e;
   }
 }
 
@@ -2734,14 +2739,16 @@ async function saveUser(oldUsername){
       ar+' (@'+username+') — '+(isAdminUser?'admin':perms.length+' perms'),
       isEdit?'edit':'add'
     );
-    saveData();renderUsers();applyTranslations();
+    // CRITICAL: write immediately and wait — admin may close the tab right after.
+    await saveData(true);
+    renderUsers();applyTranslations();
     closeModal();toast('✅ '+(lang==='ar'?'تم':'Done'));
   }finally{
     if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='💾 '+t('save');}
   }
 }
 
-function confirmDeleteUser(username){
+async function confirmDeleteUser(username){
   const u=USERS[username];if(!u)return;
   if(u.role==='admin'){toast(lang==='ar'?'لا يمكن حذف المدير':'Cannot delete admin');return;}
   if(!confirm(t('confirmDelete')+' "'+(lang==='ar'?u.name_ar:u.name_en)+'"?'))return;
@@ -2749,7 +2756,8 @@ function confirmDeleteUser(username){
   // The Firebase Auth account stays and can be deleted from the Firebase console if you want.
   delete USERS[username];
   logHistory(lang==='ar'?'حذف مستخدم':'User Deleted',u.name_ar,'delete');
-  saveData();renderUsers();toast(t('deleted'));
+  await saveData(true);   // write immediately, don't risk losing this
+  renderUsers();toast(t('deleted'));
 }
 
 // ===================== EMOJI ADD (admin) =====================
