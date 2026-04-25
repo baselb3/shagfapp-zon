@@ -1,0 +1,12 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Any authenticated user can read all app data.
+    // Writes are also allowed for any authenticated user — the UI enforces
+    // permission gating via the can() function. Tighten later if needed.
+    match /app/{doc} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null;
+    }
+  }
+}
