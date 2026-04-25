@@ -2717,16 +2717,28 @@ async function saveUser(oldUsername){
   try{
     if(!isEdit){
       // CREATE: register the auth account on the secondary app (so admin's session is untouched)
+      const email=usernameToEmail(username);
       try{
-        await secondaryAuth.createUserWithEmailAndPassword(usernameToEmail(username), pw);
+        await secondaryAuth.createUserWithEmailAndPassword(email, pw);
         await secondaryAuth.signOut();
       }catch(e){
         if(e.code==='auth/email-already-in-use'){
-          toast(lang==='ar'?'الحساب موجود في المصادقة':'Auth account already exists');
+          // Orphan auth account from a prior aborted attempt. Try to claim it by
+          // signing in with the password the admin just typed.
+          try{
+            await secondaryAuth.signInWithEmailAndPassword(email, pw);
+            await secondaryAuth.signOut();
+            // Password matched — we can safely add this user to Firestore.
+          }catch(signInErr){
+            toast(lang==='ar'
+              ?'اسم المستخدم مستخدم سابقاً بكلمة مرور مختلفة. اختر اسماً مختلفاً، أو احذف الحساب اليتيم من Firebase Console.'
+              :'Username taken with a different password. Pick a different username, or delete the orphan from Firebase Console.');
+            return;
+          }
         }else{
           toast((lang==='ar'?'فشل الإنشاء: ':'Create failed: ')+e.message);
+          return;
         }
-        return;
       }
     }
     // Note: changing another user's password from the client requires Cloud Functions.
