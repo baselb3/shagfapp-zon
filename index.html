@@ -1747,7 +1747,7 @@ function importZones(rows){
   const breakdown={};
   newZones.forEach(z=>{
     if(!breakdown[z.cityId])breakdown[z.cityId]={cityId:z.cityId,newCount:0,updateCount:0,ids:[]};
-    const exists=ZONES.some(x=>x.id===z.id);
+    const exists=ZONES.some(x=>x.id===z.id&&(x.cityId||'riyadh')===z.cityId);
     if(exists)breakdown[z.cityId].updateCount++;
     else breakdown[z.cityId].newCount++;
     breakdown[z.cityId].ids.push(z.id);
@@ -1859,7 +1859,7 @@ function applyImport(type,mode,data){
   }else if(type==='zones'){
     if(mode==='replace')ZONES.length=0;
     data.forEach(z=>{
-      if(mode==='merge'){const idx=ZONES.findIndex(x=>x.id===z.id);if(idx>=0){ZONES[idx]=z;return;}}
+      if(mode==='merge'){const idx=ZONES.findIndex(x=>x.id===z.id&&(x.cityId||'riyadh')===(z.cityId||'riyadh'));if(idx>=0){ZONES[idx]=z;return;}}
       ZONES.push(z);
     });
     ZONES.sort((a,b)=>a.id-b.id);
