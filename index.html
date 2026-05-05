@@ -887,6 +887,143 @@ async function _flushSave(){
 // Mutable pricing array (starts as copy of default)
 const PRICING=JSON.parse(JSON.stringify(PRICING_TABLE));
 
+// ===================== REAL-TIME SYNC =====================
+// After login we attach Firestore onSnapshot listeners on each shared doc.
+// Any change made by any user is pushed to every open dashboard within ~1s
+// without a page refresh. Listeners are torn down on logout.
+let _subs=[];
+function subscribeData(){
+  unsubscribeData();
+  const safe=(fn)=>{try{fn();}catch(e){console.error('render after snapshot failed:',e);}};
+  _subs.push(db.collection('app').doc('zones').onSnapshot(d=>{
+    if(!d.exists)return;
+    ZONES = d.data().list || [];
+    safe(()=>{renderZones();drawAllZones();renderStats();renderCoaches('');renderCities();});
+  }));
+  _subs.push(db.collection('app').doc('coaches').onSnapshot(d=>{
+    if(!d.exists)return;
+    COACHES = d.data().list || [];
+    safe(()=>{renderCoaches('');drawAllZones();renderStats();renderCities();});
+  }));
+  _subs.push(db.collection('app').doc('teams').onSnapshot(d=>{
+    if(!d.exists)return;
+    TEAMS = d.data().list || [];
+    safe(()=>{renderCoaches('');});
+  }));
+  _subs.push(db.collection('app').doc('cities').onSnapshot(d=>{
+    if(!d.exists)return;
+    CITIES = d.data().list || [];
+    safe(()=>{populateCitySelect();renderCities();renderZones();drawAllZones();renderCoaches('');});
+  }));
+  _subs.push(db.collection('app').doc('users').onSnapshot(d=>{
+    if(!d.exists)return;
+    USERS = d.data().map || {};
+    // keep currentUser fresh in case an admin updated their permissions
+    if(currentUser && USERS[currentUser.username]) currentUser = USERS[currentUser.username];
+    safe(()=>{if(typeof renderUsers==='function')renderUsers();});
+  }));
+  _subs.push(db.collection('app').doc('config').onSnapshot(d=>{
+    if(!d.exists)return;
+    const c=d.data();
+    // We intentionally do NOT sync currentCity / lang from config — those feel
+    // per-user even though they're stored globally (legacy behavior). Pricing
+    // and emoji system ARE shared and must propagate.
+    if(c.pricingJSON){
+      try{
+        const saved=JSON.parse(c.pricingJSON);
+        if(Array.isArray(saved)&&saved.length){
+          PRICING.splice(0,PRICING.length,...saved);
+          safe(()=>{buildPriceSessionsOptions();renderPriceTable();calcPrice();});
+        }
+      }catch(_){}
+    }
+    if(Array.isArray(c.emoji_system)&&c.emoji_system.length){
+      EMOJI_SYSTEM.splice(0,EMOJI_SYSTEM.length,...c.emoji_system);
+      buildEmojiMap();
+      safe(()=>{renderEmojiLegend();renderCoaches('');});
+    }
+  }));
+  _subs.push(db.collection('app').doc('history').onSnapshot(d=>{
+    if(!d.exists)return;
+    HISTORY = d.data().list || [];
+    safe(()=>{renderHistory();});
+  }));
+}
+function unsubscribeData(){
+  _subs.forEach(u=>{try{u();}catch(_){}});
+  _subs=[];
+}
+
+// ===================== SESSION (24-hour auto-login) =====================
+// Refreshing the page should NOT log the user out — they stay signed in for
+// 24 hours from the original login. After 24h, we sign them out and force
+// re-authentication.
+const SESSION_MAX_MS = 24*60*60*1000;
+function setLoginTime(){try{localStorage.setItem('shagaf_login_time',String(Date.now()));}catch(_){}}
+function clearLoginTime(){try{localStorage.removeItem('shagaf_login_time');}catch(_){}}
+function isSessionFresh(){
+  try{
+    const t=parseInt(localStorage.getItem('shagaf_login_time')||'0',10);
+    return t>0 && (Date.now()-t)<SESSION_MAX_MS;
+  }catch(_){return false;}
+}
+
+// ===================== DAILY BACKUP (23:59) =====================
+// One snapshot per calendar date stored at app/backup_YYYY-MM-DD. We schedule
+// a timer for the next 23:59 while the page is open. On login we also run a
+// catch-up pass for *yesterday* so a missed day (no one online at 23:59) gets
+// recovered with current state next time someone opens the app.
+let _backupTimer=null;
+function _dateStr(d){
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+async function _writeBackup(dateStr, label){
+  const docId='backup_'+dateStr;
+  const ref=db.collection('app').doc(docId);
+  try{
+    const existing=await ref.get();
+    if(existing.exists)return false;
+    await ref.set({
+      date: dateStr,
+      timestamp: Date.now(),
+      createdBy: (currentUser && (currentUser.username||currentUser.name_en)) || 'unknown',
+      label: label||'scheduled',
+      zones: ZONES,
+      coaches: COACHES,
+      teams: TEAMS,
+      cities: CITIES,
+      users: USERS,
+      pricingJSON: JSON.stringify(PRICING),
+      emoji_system: EMOJI_SYSTEM,
+      history: HISTORY,
+    });
+    return true;
+  }catch(e){
+    console.error('backup '+dateStr+' failed:',e);
+    return false;
+  }
+}
+async function dailyBackupNow(){
+  if(!currentUser)return;
+  await _writeBackup(_dateStr(new Date()), 'scheduled-23:59');
+}
+async function backupCatchUpYesterday(){
+  if(!currentUser)return;
+  const y=new Date(); y.setDate(y.getDate()-1);
+  await _writeBackup(_dateStr(y), 'catch-up');
+}
+function scheduleDailyBackup(){
+  if(_backupTimer){clearTimeout(_backupTimer);_backupTimer=null;}
+  const now=new Date();
+  const target=new Date(now.getFullYear(),now.getMonth(),now.getDate(),23,59,0,0);
+  if(target<=now)target.setDate(target.getDate()+1);
+  const ms=Math.max(1000, target.getTime()-now.getTime());
+  _backupTimer=setTimeout(async()=>{
+    await dailyBackupNow();
+    scheduleDailyBackup();
+  }, ms);
+}
+
 // ===================== AUTH (Firebase) =====================
 // Login flow:
 //   1. signInWithEmailAndPassword(${username}@shagaf.local, pw)
@@ -966,6 +1103,10 @@ async function doLogin(){
     populateCitySelect();
     setLang(lang);
     initMap();
+    setLoginTime();
+    subscribeData();
+    backupCatchUpYesterday();
+    scheduleDailyBackup();
   }catch(e){
     console.error('Login failed:',e);
     errEl.textContent=lang==='ar'?'بيانات الدخول غير صحيحة':'Invalid credentials';
@@ -978,6 +1119,9 @@ function isAdmin(){return currentUser&&currentUser.role==='admin';}
 
 async function doLogout(){
   if(!confirm(lang==='ar'?'تأكيد تسجيل الخروج؟':'Confirm logout?'))return;
+  clearLoginTime();
+  unsubscribeData();
+  if(_backupTimer){clearTimeout(_backupTimer);_backupTimer=null;}
   try{ await auth.signOut(); }catch(e){}
   // Hard reload to reset all in-memory state cleanly.
   location.reload();
@@ -1384,7 +1528,7 @@ function openTeamManager(){
     <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">${t('cancel')}</button>`);
 }
 
-function addTeam(){
+async function addTeam(){
   const ar=document.getElementById('t-ar')?.value.trim();
   const en=document.getElementById('t-en')?.value.trim();
   if(!ar||!en){toast(lang==='ar'?'أدخل الاسم بالعربي والإنجليزي':'Enter both names');return;}
@@ -1392,7 +1536,7 @@ function addTeam(){
   if(TEAMS.find(t=>t.id===id)){toast(lang==='ar'?'الفريق موجود':'Team exists');return;}
   TEAMS.push({id,ar,en});
   logHistory(lang==='ar'?'إضافة فريق':'Team Added', ar+' / '+en,'add');
-  saveData();
+  await saveData(true);
   openTeamManager();
   toast('✅ '+(lang==='ar'?'تمت الإضافة':'Added'));
 }
@@ -1411,19 +1555,19 @@ function editTeam(idx){
     </div>`;
 }
 
-function saveTeamEdit(idx){
+async function saveTeamEdit(idx){
   const ar=document.getElementById('et-ar')?.value.trim();
   const en=document.getElementById('et-en')?.value.trim();
   if(!ar||!en)return;
   TEAMS[idx].ar=ar;TEAMS[idx].en=en;
   // update coaches with this team
   COACHES.forEach(c=>{if(c.teamId===TEAMS[idx].id){c.team=lang==='ar'?ar:en;}});
-  saveData();openTeamManager();toast('✅ '+t('coachUpdated'));
+  await saveData(true);openTeamManager();toast('✅ '+t('coachUpdated'));
 }
 
-function deleteTeam(idx){
+async function deleteTeam(idx){
   if(!confirm(t('confirmDelete')+' "'+TEAMS[idx].ar+'"?'))return;
-  TEAMS.splice(idx,1);saveData();openTeamManager();toast(t('deleted'));
+  TEAMS.splice(idx,1);await saveData(true);openTeamManager();toast(t('deleted'));
 }
 
 // ===================== ZONES RENDER =====================
@@ -1548,12 +1692,15 @@ function editEmoji(key){
       <button class="btn btn-full" onclick="closeModal()">إلغاء</button>
     </div>`);
 }
-function saveEmoji(key){
+async function saveEmoji(key){
   const e=EMOJI_SYSTEM.find(x=>x.key===key);if(!e)return;
   e.emoji=document.getElementById('em-emoji').value.trim();
   e.ar=document.getElementById('em-ar').value.trim();
   e.en=document.getElementById('em-en').value.trim();
-  buildEmojiMap();renderEmojiLegend();renderCoaches('');renderStats();
+  buildEmojiMap();
+  await saveData(true);
+  logHistory(lang==='ar'?'تعديل إيموجي':'Emoji Edited',`${e.emoji} ${e.ar} (${e.code})`,'edit');
+  renderEmojiLegend();renderCoaches('');renderStats();
   closeModal();toast('✅ تم تحديث الإيموجي');
 }
 
@@ -1789,7 +1936,7 @@ function importZones(rows){
     <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">${lang==='ar'?'❌ رفض':'❌ Reject'}</button>`);
 }
 
-function importEmojis(rows){
+async function importEmojis(rows){
   rows.forEach(r=>{
     const e=EMOJI_SYSTEM.find(x=>x.key===String(r[0]).trim());
     if(e){
@@ -1800,10 +1947,10 @@ function importEmojis(rows){
   });
   buildEmojiMap();renderEmojiLegend();renderCoaches('');renderStats();
   logHistory(lang==='ar'?'استيراد إيموجي':'Emoji Import', rows.length+' '+(lang==='ar'?'صف':'rows'),'import');
-  saveData();toast(t('importSuccess'));
+  await saveData(true);toast(t('importSuccess'));
 }
 
-function importCities(rows){
+async function importCities(rows){
   const newCities=rows.map(r=>({
     id:String(r[0]||'').trim().toLowerCase(),
     code:String(r[1]||'').trim().toUpperCase(),
@@ -1816,12 +1963,12 @@ function importCities(rows){
   // replace behavior
   if(!confirm(lang==='ar'?`استبدال المدن الحالية بـ ${newCities.length} مدينة؟`:`Replace current cities with ${newCities.length}?`))return;
   CITIES.splice(0,CITIES.length,...newCities);
-  saveData();populateCitySelect();renderCities();drawAllZones();
+  await saveData(true);populateCitySelect();renderCities();drawAllZones();
   logHistory(lang==='ar'?'استيراد مدن':'Cities Import', newCities.length+' '+(lang==='ar'?'مدينة':'cities'),'import');
   toast(t('importSuccess'));
 }
 
-function importPricing(rows){
+async function importPricing(rows){
   // Format: sessions, expWeeks, p1_vat, p2_vat, p3_vat, p4_vat
   const newPricing=rows.map(r=>{
     const sessions=parseInt(r[0]);
@@ -1843,12 +1990,12 @@ function importPricing(rows){
   if(!newPricing.length){toast('❌ لا توجد بيانات صالحة');return;}
   if(!confirm(lang==='ar'?`استبدال جدول الأسعار بـ ${newPricing.length} صف؟`:`Replace pricing table with ${newPricing.length} rows?`))return;
   PRICING.splice(0,PRICING.length,...newPricing);
-  saveData();buildPriceSessionsOptions();renderPriceTable();calcPrice();
+  await saveData(true);buildPriceSessionsOptions();renderPriceTable();calcPrice();
   logHistory(lang==='ar'?'استيراد أسعار':'Pricing Import', newPricing.length+' '+(lang==='ar'?'باقة':'packages'),'import');
   toast(t('importSuccess'));
 }
 
-function applyImport(type,mode,data){
+async function applyImport(type,mode,data){
   if(!Array.isArray(data)){try{data=JSON.parse(data);}catch(e){toast('❌ data parse error');return;}}
   if(type==='coaches'){
     if(mode==='replace')COACHES.length=0;
@@ -1869,7 +2016,7 @@ function applyImport(type,mode,data){
     (type==='coaches'?(lang==='ar'?'مدربات':'Coaches'):type==='zones'?(lang==='ar'?'زونات':'Zones'):'إيموجي')+' — '+data.length+' '+(lang==='ar'?'صف':'rows')+' — '+(mode==='replace'?(lang==='ar'?'استبدال':'Replace'):(lang==='ar'?'دمج':'Merge')),
     'import'
   );
-  saveData();drawAllZones();renderCoaches('');renderZones();renderStats();
+  await saveData(true);drawAllZones();renderCoaches('');renderZones();renderStats();
   closeModal();toast(t('importSuccess'));
 }
 
@@ -2103,7 +2250,7 @@ function coachForm(c){
 }
 function openAddCoach(){openModal(`<h3>${t('addCoach')}</h3>${coachForm(null)}<div class="form-row"><button class="btn btn-success btn-full" onclick="saveCoach(-1)">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);}
 function openEditCoach(idx){openModal(`<h3>✏️ ${COACHES[idx].name}</h3>${coachForm(COACHES[idx])}<div class="form-row"><button class="btn btn-success btn-full" onclick="saveCoach(${idx})">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);}
-function saveCoach(idx){
+async function saveCoach(idx){
   const name=document.getElementById('m-name').value.trim();
   if(!name){toast(t('enterName'));return;}
   const zones=(document.getElementById('m-zones').value||'').split(',').map(s=>parseInt(s.trim())).filter(n=>!isNaN(n));
@@ -2126,7 +2273,7 @@ function saveCoach(idx){
     license:document.getElementById('m-license')?.value==='true',
     available:document.getElementById('m-avail').value==='true'};
   if(idx===-1)COACHES.push(obj);else COACHES[idx]=obj;
-  saveData();drawAllZones();renderCoaches('');renderStats();
+  await saveData(true);drawAllZones();renderCoaches('');renderStats();
   logHistory(
     idx===-1?(lang==='ar'?'إضافة مدربة':'Coach Added'):(lang==='ar'?'تعديل مدربة':'Coach Edited'),
     obj.name+' — '+obj.team+' — Zone: '+(obj.zones.join(',')||'—'),
@@ -2134,11 +2281,11 @@ function saveCoach(idx){
   );
   closeModal();toast(idx===-1?t('coachAdded'):t('coachUpdated'));
 }
-function confirmDeleteCoach(idx){
+async function confirmDeleteCoach(idx){
   if(!can('delete_coaches')){toast(lang==='ar'?'ليس لديك صلاحية الحذف':'No permission to delete');return;}
   if(!confirm(t('confirmDelete')+' "'+COACHES[idx].name+'"?'))return;
   const dc=COACHES[idx];
-  COACHES.splice(idx,1);saveData();drawAllZones();renderCoaches('');renderStats();
+  COACHES.splice(idx,1);await saveData(true);drawAllZones();renderCoaches('');renderStats();
   logHistory(lang==='ar'?'حذف مدربة':'Coach Deleted', dc.name+' — '+dc.team,'delete');
   toast(t('deleted'));
 }
@@ -2183,7 +2330,7 @@ function openEditZone(idx){
     <div class="form-row"><button class="btn btn-success btn-full" onclick="saveZone(${idx})">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);
   map.setView([z.lat,z.lng],12);
 }
-function saveZone(idx){
+async function saveZone(idx){
   const id=parseInt(document.getElementById('z-id').value);
   const lat=parseFloat(document.getElementById('z-lat').value);
   const lng=parseFloat(document.getElementById('z-lng').value);
@@ -2199,7 +2346,7 @@ function saveZone(idx){
     formatZoneId(obj)+' — '+obj.lat.toFixed(4)+', '+obj.lng.toFixed(4)+' — R:'+obj.radius+'km',
     idx===-1?'add':'zone'
   );
-  saveData();drawAllZones();renderZones();renderStats();
+  await saveData(true);drawAllZones();renderZones();renderStats();
   closeModal();toast(idx===-1?t('zoneAdded'):t('zoneUpdated'));
 }
 function promptNewZone(lat,lng){
@@ -2221,11 +2368,11 @@ function promptNewZone(lat,lng){
     <input type="hidden" id="z-lng" value="${lng}"/>
     <div class="form-row"><button class="btn btn-success btn-full" onclick="saveZone(-1)">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);
 }
-function confirmDeleteZone(idx){
+async function confirmDeleteZone(idx){
   if(!can('delete_zones')){toast(lang==='ar'?'ليس لديك صلاحية الحذف':'No permission to delete');return;}
   if(!confirm(t('confirmDelete')+' '+formatZoneId(ZONES[idx])+'?'))return;
   const dz=ZONES[idx];
-  ZONES.splice(idx,1);saveData();drawAllZones();renderZones();renderStats();
+  ZONES.splice(idx,1);await saveData(true);drawAllZones();renderZones();renderStats();
   logHistory(lang==='ar'?'حذف زون':'Zone Deleted',formatZoneId(dz),'delete');
   toast(t('deleted'));
 }
@@ -2427,7 +2574,7 @@ function openEditCity(idx){
     </div>`);
 }
 
-function saveCity(idx){
+async function saveCity(idx){
   const code=(document.getElementById('ci-code').value||'').trim().toUpperCase();
   const ar=(document.getElementById('ci-ar').value||'').trim();
   const en=(document.getElementById('ci-en').value||'').trim();
@@ -2446,11 +2593,12 @@ function saveCity(idx){
     CITIES[idx]={...CITIES[idx],code,ar,en,lat:lat||CITIES[idx].lat,lng:lng||CITIES[idx].lng};
     logHistory(lang==='ar'?'تعديل مدينة':'City Edited',`${code}- ${ar}`,'edit');
   }
-  saveData();populateCitySelect();renderCities();renderZones();drawAllZones();
+  await saveData(true);
+  populateCitySelect();renderCities();renderZones();drawAllZones();
   closeModal();toast('✅ '+(lang==='ar'?'تم':'Done'));
 }
 
-function confirmDeleteCity(idx){
+async function confirmDeleteCity(idx){
   const c=CITIES[idx];
   const zoneCount=ZONES.filter(z=>(z.cityId||'riyadh')===c.id).length;
   const warning=zoneCount>0
@@ -2465,7 +2613,8 @@ function confirmDeleteCity(idx){
   CITIES.splice(idx,1);
   if(currentCity===c.id&&CITIES.length)currentCity=CITIES[0].id;
   logHistory(lang==='ar'?'حذف مدينة':'City Deleted',c.ar+' ('+zoneCount+' زون)','delete');
-  saveData();populateCitySelect();renderCities();renderZones();drawAllZones();
+  await saveData(true);
+  populateCitySelect();renderCities();renderZones();drawAllZones();
   toast(t('deleted'));
 }
 
@@ -2602,8 +2751,8 @@ function updatePriceCell(input){
   PRICING[r][c+1]=(vat/1.15)/sessions;
   PRICING[r][c+2]=vat/sessions;
 }
-function savePricing(){
-  saveData();
+async function savePricing(){
+  await saveData(true);
   logHistory(lang==='ar'?'تعديل جدول الأسعار':'Pricing Edited',lang==='ar'?'تم تحديث أسعار الباقات':'Package prices updated','edit');
   closeModal();renderPriceTable();calcPrice();
   toast('✅ '+t('coachUpdated'));
@@ -2837,7 +2986,7 @@ function openAddEmoji(){
       <button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button>
     </div>`);
 }
-function saveNewEmoji(){
+async function saveNewEmoji(){
   const key=(document.getElementById('ne-key').value||'').trim();
   const emoji=(document.getElementById('ne-emoji').value||'').trim();
   let code=(document.getElementById('ne-code').value||'').trim();
@@ -2866,12 +3015,13 @@ function saveNewEmoji(){
       SPORT_KEY_MAP[ar]=key;
     }
   }
-  buildEmojiMap();saveData();
+  buildEmojiMap();
+  await saveData(true);
   logHistory(lang==='ar'?'إضافة إيموجي':'Emoji Added',`${emoji} ${ar} (${code})`,'add');
   renderEmojiLegend();renderCoaches('');
   closeModal();toast('✅ '+(lang==='ar'?'تمت الإضافة':'Added'));
 }
-function confirmDeleteEmoji(key){
+async function confirmDeleteEmoji(key){
   const e=EMOJI_SYSTEM.find(x=>x.key===key);if(!e)return;
   // Protect core emojis
   const core=['available','unavailable','fulltime','parttime','freelancer','team','hours','dayoff','members','zone','nationality','best_coach','pin','city','price','license_yes','license_no'];
@@ -2886,7 +3036,8 @@ function confirmDeleteEmoji(key){
     if(si>=0)SPORTS_LIST.splice(si,1);
     delete SPORT_KEY_MAP[arName];
   }
-  buildEmojiMap();saveData();
+  buildEmojiMap();
+  await saveData(true);
   logHistory(lang==='ar'?'حذف إيموجي':'Emoji Deleted',e.emoji+' '+e.ar,'delete');
   renderEmojiLegend();renderCoaches('');
   toast(t('deleted'));
@@ -2901,9 +3052,48 @@ buildEmojiMap();
 buildPriceSessionsOptions();
 setLang(lang);
 
-// Always require an explicit login each time the page loads.
-// Sign out any leftover Firebase Auth session so the login screen actually shows.
-auth.signOut().catch(()=>{});
+// Auto-login on page load if the user has a fresh session (< 24h since last
+// successful login). Refreshing the page should NOT log them out within that
+// window. After 24h, sign them out and force re-authentication.
+auth.onAuthStateChanged(async (fbUser)=>{
+  if(!fbUser || currentUser) return;       // not signed in, or we already handled login
+  if(!isSessionFresh()){
+    // Session older than 24h (or never recorded) — force a fresh login
+    clearLoginTime();
+    try{ await auth.signOut(); }catch(_){}
+    return;
+  }
+  const email=fbUser.email||'';
+  const username=email.split('@')[0];
+  if(!username){ try{await auth.signOut();}catch(_){} return; }
+  try{
+    await loadData();
+    const u=USERS[username];
+    if(!u){
+      clearLoginTime();
+      try{await auth.signOut();}catch(_){}
+      return;
+    }
+    currentUser=u;
+    await loadHistory();
+    document.getElementById('loginOverlay').style.display='none';
+    document.getElementById('userLabel').textContent='👤 '+(lang==='ar'?u.name_ar:u.name_en);
+    const rb=document.getElementById('roleBadge');
+    rb.textContent=t(u.role==='admin'?'admin':'viewer');
+    rb.className='role-badge '+(u.role==='admin'?'role-admin':'role-viewer');
+    if(can('edit_zones'))document.getElementById('drawModeBtn').style.display='block';
+    populateCitySelect();
+    setLang(lang);
+    if(!map)initMap();
+    subscribeData();
+    backupCatchUpYesterday();
+    scheduleDailyBackup();
+  }catch(e){
+    console.error('Auto-login failed:',e);
+    clearLoginTime();
+    try{await auth.signOut();}catch(_){}
+  }
+});
 </script>
 </body>
 </html>
