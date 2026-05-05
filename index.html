@@ -3054,22 +3054,23 @@ setLang(lang);
 
 // Auto-login on page load if the user has a fresh session (< 24h since last
 // successful login). Refreshing the page should NOT log them out within that
-// window. After 24h, sign them out and force re-authentication.
+// window. If the local session flag is missing or expired, we do NOT call
+// signOut() here — that would race with a manual doLogin() that's currently
+// awaiting signInWithEmailAndPassword (since this listener fires during that
+// await, before doLogin has a chance to setLoginTime). Instead we just return
+// silently and let the login screen handle re-authentication.
 auth.onAuthStateChanged(async (fbUser)=>{
   if(!fbUser || currentUser) return;       // not signed in, or we already handled login
-  if(!isSessionFresh()){
-    // Session older than 24h (or never recorded) — force a fresh login
-    clearLoginTime();
-    try{ await auth.signOut(); }catch(_){}
-    return;
-  }
+  if(!isSessionFresh()) return;            // no fresh session → let login screen show
   const email=fbUser.email||'';
   const username=email.split('@')[0];
-  if(!username){ try{await auth.signOut();}catch(_){} return; }
+  if(!username) return;
   try{
     await loadData();
     const u=USERS[username];
     if(!u){
+      // Auth account exists but profile is missing — clear the flag so next
+      // load shows the login screen cleanly, and sign out the orphan session.
       clearLoginTime();
       try{await auth.signOut();}catch(_){}
       return;
@@ -3090,8 +3091,6 @@ auth.onAuthStateChanged(async (fbUser)=>{
     scheduleDailyBackup();
   }catch(e){
     console.error('Auto-login failed:',e);
-    clearLoginTime();
-    try{await auth.signOut();}catch(_){}
   }
 });
 </script>
