@@ -884,6 +884,34 @@ async function _flushSave(){
   }
 }
 
+// saveOnly(...names): write ONLY the specified docs. This prevents the
+// classic data-loss bug where editing a coach in tab A would also overwrite
+// `cities` in Firestore with tab A's stale CITIES (e.g., wiping a city that
+// tab B added). Each modify-function should call saveOnly with just the docs
+// it actually touched.
+//   names ∈ {'zones','coaches','teams','users','cities','config'}
+async function saveOnly(...names){
+  if(!currentUser)return;
+  if(_saveTimer){clearTimeout(_saveTimer);_saveTimer=null;}
+  try{
+    const batch=db.batch();
+    for(const n of names){
+      if(n==='zones')        batch.set(db.collection('app').doc('zones'),  {list:ZONES});
+      else if(n==='coaches') batch.set(db.collection('app').doc('coaches'),{list:COACHES});
+      else if(n==='teams')   batch.set(db.collection('app').doc('teams'),  {list:TEAMS});
+      else if(n==='users')   batch.set(db.collection('app').doc('users'),  {map:USERS});
+      else if(n==='cities')  batch.set(db.collection('app').doc('cities'), {list:CITIES});
+      else if(n==='config')  batch.set(db.collection('app').doc('config'), {currentCity, lang, pricingJSON:JSON.stringify(PRICING), emoji_system:EMOJI_SYSTEM});
+      else console.warn('saveOnly: unknown doc name',n);
+    }
+    await batch.commit();
+  }catch(e){
+    console.error('saveOnly failed:',e,names);
+    toast(lang==='ar'?'⚠️ فشل الحفظ':'⚠️ Save failed');
+    throw e;
+  }
+}
+
 // Mutable pricing array (starts as copy of default)
 const PRICING=JSON.parse(JSON.stringify(PRICING_TABLE));
 
@@ -1536,7 +1564,7 @@ async function addTeam(){
   if(TEAMS.find(t=>t.id===id)){toast(lang==='ar'?'الفريق موجود':'Team exists');return;}
   TEAMS.push({id,ar,en});
   logHistory(lang==='ar'?'إضافة فريق':'Team Added', ar+' / '+en,'add');
-  await saveData(true);
+  await saveOnly('teams');
   openTeamManager();
   toast('✅ '+(lang==='ar'?'تمت الإضافة':'Added'));
 }
@@ -1562,12 +1590,12 @@ async function saveTeamEdit(idx){
   TEAMS[idx].ar=ar;TEAMS[idx].en=en;
   // update coaches with this team
   COACHES.forEach(c=>{if(c.teamId===TEAMS[idx].id){c.team=lang==='ar'?ar:en;}});
-  await saveData(true);openTeamManager();toast('✅ '+t('coachUpdated'));
+  await saveOnly('teams','coaches');openTeamManager();toast('✅ '+t('coachUpdated'));
 }
 
 async function deleteTeam(idx){
   if(!confirm(t('confirmDelete')+' "'+TEAMS[idx].ar+'"?'))return;
-  TEAMS.splice(idx,1);await saveData(true);openTeamManager();toast(t('deleted'));
+  TEAMS.splice(idx,1);await saveOnly('teams');openTeamManager();toast(t('deleted'));
 }
 
 // ===================== ZONES RENDER =====================
@@ -1698,7 +1726,7 @@ async function saveEmoji(key){
   e.ar=document.getElementById('em-ar').value.trim();
   e.en=document.getElementById('em-en').value.trim();
   buildEmojiMap();
-  await saveData(true);
+  await saveOnly('config');
   logHistory(lang==='ar'?'تعديل إيموجي':'Emoji Edited',`${e.emoji} ${e.ar} (${e.code})`,'edit');
   renderEmojiLegend();renderCoaches('');renderStats();
   closeModal();toast('✅ تم تحديث الإيموجي');
@@ -1947,7 +1975,7 @@ async function importEmojis(rows){
   });
   buildEmojiMap();renderEmojiLegend();renderCoaches('');renderStats();
   logHistory(lang==='ar'?'استيراد إيموجي':'Emoji Import', rows.length+' '+(lang==='ar'?'صف':'rows'),'import');
-  await saveData(true);toast(t('importSuccess'));
+  await saveOnly('config');toast(t('importSuccess'));
 }
 
 async function importCities(rows){
@@ -1963,7 +1991,7 @@ async function importCities(rows){
   // replace behavior
   if(!confirm(lang==='ar'?`استبدال المدن الحالية بـ ${newCities.length} مدينة؟`:`Replace current cities with ${newCities.length}?`))return;
   CITIES.splice(0,CITIES.length,...newCities);
-  await saveData(true);populateCitySelect();renderCities();drawAllZones();
+  await saveOnly('cities');populateCitySelect();renderCities();drawAllZones();
   logHistory(lang==='ar'?'استيراد مدن':'Cities Import', newCities.length+' '+(lang==='ar'?'مدينة':'cities'),'import');
   toast(t('importSuccess'));
 }
@@ -1990,7 +2018,7 @@ async function importPricing(rows){
   if(!newPricing.length){toast('❌ لا توجد بيانات صالحة');return;}
   if(!confirm(lang==='ar'?`استبدال جدول الأسعار بـ ${newPricing.length} صف؟`:`Replace pricing table with ${newPricing.length} rows?`))return;
   PRICING.splice(0,PRICING.length,...newPricing);
-  await saveData(true);buildPriceSessionsOptions();renderPriceTable();calcPrice();
+  await saveOnly('config');buildPriceSessionsOptions();renderPriceTable();calcPrice();
   logHistory(lang==='ar'?'استيراد أسعار':'Pricing Import', newPricing.length+' '+(lang==='ar'?'باقة':'packages'),'import');
   toast(t('importSuccess'));
 }
@@ -2016,7 +2044,9 @@ async function applyImport(type,mode,data){
     (type==='coaches'?(lang==='ar'?'مدربات':'Coaches'):type==='zones'?(lang==='ar'?'زونات':'Zones'):'إيموجي')+' — '+data.length+' '+(lang==='ar'?'صف':'rows')+' — '+(mode==='replace'?(lang==='ar'?'استبدال':'Replace'):(lang==='ar'?'دمج':'Merge')),
     'import'
   );
-  await saveData(true);drawAllZones();renderCoaches('');renderZones();renderStats();
+  // Only write the doc that was actually replaced — coaches OR zones, not both.
+  await saveOnly(type==='coaches'?'coaches':'zones');
+  drawAllZones();renderCoaches('');renderZones();renderStats();
   closeModal();toast(t('importSuccess'));
 }
 
@@ -2273,7 +2303,7 @@ async function saveCoach(idx){
     license:document.getElementById('m-license')?.value==='true',
     available:document.getElementById('m-avail').value==='true'};
   if(idx===-1)COACHES.push(obj);else COACHES[idx]=obj;
-  await saveData(true);drawAllZones();renderCoaches('');renderStats();
+  await saveOnly('coaches');drawAllZones();renderCoaches('');renderStats();
   logHistory(
     idx===-1?(lang==='ar'?'إضافة مدربة':'Coach Added'):(lang==='ar'?'تعديل مدربة':'Coach Edited'),
     obj.name+' — '+obj.team+' — Zone: '+(obj.zones.join(',')||'—'),
@@ -2285,7 +2315,7 @@ async function confirmDeleteCoach(idx){
   if(!can('delete_coaches')){toast(lang==='ar'?'ليس لديك صلاحية الحذف':'No permission to delete');return;}
   if(!confirm(t('confirmDelete')+' "'+COACHES[idx].name+'"?'))return;
   const dc=COACHES[idx];
-  COACHES.splice(idx,1);await saveData(true);drawAllZones();renderCoaches('');renderStats();
+  COACHES.splice(idx,1);await saveOnly('coaches');drawAllZones();renderCoaches('');renderStats();
   logHistory(lang==='ar'?'حذف مدربة':'Coach Deleted', dc.name+' — '+dc.team,'delete');
   toast(t('deleted'));
 }
@@ -2346,7 +2376,7 @@ async function saveZone(idx){
     formatZoneId(obj)+' — '+obj.lat.toFixed(4)+', '+obj.lng.toFixed(4)+' — R:'+obj.radius+'km',
     idx===-1?'add':'zone'
   );
-  await saveData(true);drawAllZones();renderZones();renderStats();
+  await saveOnly('zones');drawAllZones();renderZones();renderStats();
   closeModal();toast(idx===-1?t('zoneAdded'):t('zoneUpdated'));
 }
 function promptNewZone(lat,lng){
@@ -2372,7 +2402,7 @@ async function confirmDeleteZone(idx){
   if(!can('delete_zones')){toast(lang==='ar'?'ليس لديك صلاحية الحذف':'No permission to delete');return;}
   if(!confirm(t('confirmDelete')+' '+formatZoneId(ZONES[idx])+'?'))return;
   const dz=ZONES[idx];
-  ZONES.splice(idx,1);await saveData(true);drawAllZones();renderZones();renderStats();
+  ZONES.splice(idx,1);await saveOnly('zones');drawAllZones();renderZones();renderStats();
   logHistory(lang==='ar'?'حذف زون':'Zone Deleted',formatZoneId(dz),'delete');
   toast(t('deleted'));
 }
@@ -2482,7 +2512,7 @@ function populateCitySelect(){
 }
 function switchCity(cityId){
   currentCity=cityId;
-  saveData();
+  saveOnly('config');
   // Center map on the city if specific city selected
   if(map&&cityId!=='all'){
     const city=CITIES.find(c=>c.id===cityId);
@@ -2524,7 +2554,8 @@ function renderCities(){
   }).join('');
   const ac=document.getElementById('adminCityBtns');
   if(ac)ac.innerHTML=can('edit_cities')?
-    `<button class="btn btn-primary btn-full" style="margin-top:8px" onclick="openAddCity()">➕ ${lang==='ar'?'إضافة مدينة':'Add City'}</button>`:'';
+    `<button class="btn btn-primary btn-full" style="margin-top:8px" onclick="openAddCity()">➕ ${lang==='ar'?'إضافة مدينة':'Add City'}</button>
+     <button class="btn btn-full" style="margin-top:6px;border-color:#16A34A;color:#16A34A" onclick="openRestorePicker()">♻️ ${lang==='ar'?'استعادة من نسخة احتياطية':'Restore from backup'}</button>`:'';
 }
 
 function openAddCity(){
@@ -2593,7 +2624,7 @@ async function saveCity(idx){
     CITIES[idx]={...CITIES[idx],code,ar,en,lat:lat||CITIES[idx].lat,lng:lng||CITIES[idx].lng};
     logHistory(lang==='ar'?'تعديل مدينة':'City Edited',`${code}- ${ar}`,'edit');
   }
-  await saveData(true);
+  await saveOnly('cities');
   populateCitySelect();renderCities();renderZones();drawAllZones();
   closeModal();toast('✅ '+(lang==='ar'?'تم':'Done'));
 }
@@ -2613,9 +2644,116 @@ async function confirmDeleteCity(idx){
   CITIES.splice(idx,1);
   if(currentCity===c.id&&CITIES.length)currentCity=CITIES[0].id;
   logHistory(lang==='ar'?'حذف مدينة':'City Deleted',c.ar+' ('+zoneCount+' زون)','delete');
-  await saveData(true);
+  // City delete cascades: zones in that city are removed and coaches lose those zone refs.
+  await saveOnly('cities','zones','coaches');
   populateCitySelect();renderCities();renderZones();drawAllZones();
   toast(t('deleted'));
+}
+
+// ===================== BACKUP RESTORE =====================
+// Lists every backup_YYYY-MM-DD doc in Firestore and lets an admin restore the
+// `cities` array from any of them. Restores ONLY cities (not coaches/zones)
+// so we don't roll back legitimate edits to other data.
+async function openRestorePicker(){
+  if(!can('edit_cities')){toast(lang==='ar'?'ليس لديك صلاحية':'No permission');return;}
+  openModal(`<h3>♻️ ${lang==='ar'?'استعادة من نسخة احتياطية':'Restore from Backup'}</h3>
+    <div style="font-size:11px;color:var(--g600);background:var(--g50);padding:8px;border-radius:6px;margin-bottom:10px;line-height:1.6">
+      ${lang==='ar'?'النظام يأخذ نسخة احتياطية يومية الساعة 23:59. اختر نسخة لتستعرض المدن فيها، ثم استعد المدن منها فقط (الزونات والمدربات ما تتأثر).':'A backup is taken daily at 23:59. Pick one to preview cities and restore only the cities.'}
+    </div>
+    <div id="backupList" style="max-height:340px;overflow-y:auto;border:1px solid var(--g200);border-radius:8px">
+      <div style="padding:20px;text-align:center;color:var(--g600)">⏳ ${lang==='ar'?'جاري التحميل...':'Loading...'}</div>
+    </div>
+    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">${t('cancel')}</button>`);
+  try{
+    const snap=await db.collection('app').get();
+    const backups=[];
+    snap.forEach(doc=>{
+      if(doc.id.startsWith('backup_')){
+        const d=doc.data()||{};
+        backups.push({id:doc.id, date:d.date||doc.id.replace('backup_',''), label:d.label||'', citiesCount:(d.cities||[]).length});
+      }
+    });
+    backups.sort((a,b)=>b.date.localeCompare(a.date)); // newest first
+    const el=document.getElementById('backupList');
+    if(!el)return;
+    if(!backups.length){
+      el.innerHTML=`<div style="padding:20px;text-align:center;color:var(--g600)">${lang==='ar'?'لا توجد نسخ احتياطية':'No backups found'}</div>`;
+      return;
+    }
+    el.innerHTML=backups.map(b=>`
+      <div style="display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--g200)">
+        <div style="flex:1">
+          <div style="font-weight:700;font-size:13px">📅 ${b.date}</div>
+          <div style="font-size:10px;color:var(--g600)">🏙 ${b.citiesCount} ${lang==='ar'?'مدينة':'cities'}${b.label?' · '+b.label:''}</div>
+        </div>
+        <button class="btn btn-icon" onclick="previewBackup('${b.id}')" title="${lang==='ar'?'معاينة':'Preview'}">👁</button>
+        <button class="btn btn-icon" style="border-color:#16A34A;color:#16A34A" onclick="restoreCitiesFromBackup('${b.id}')" title="${lang==='ar'?'استعادة المدن':'Restore Cities'}">♻️</button>
+      </div>`).join('');
+  }catch(e){
+    console.error('list backups failed:',e);
+    const el=document.getElementById('backupList');
+    if(el)el.innerHTML=`<div style="padding:20px;text-align:center;color:var(--red)">${lang==='ar'?'فشل التحميل':'Failed to load'}: ${e.message}</div>`;
+  }
+}
+
+async function previewBackup(backupId){
+  try{
+    const doc=await db.collection('app').doc(backupId).get();
+    if(!doc.exists){toast(lang==='ar'?'النسخة غير موجودة':'Backup not found');return;}
+    const data=doc.data()||{};
+    const cities=data.cities||[];
+    const rows=cities.map(c=>`<tr>
+      <td style="padding:4px 8px;font-weight:700">${c.code||'—'}</td>
+      <td style="padding:4px 8px">${c.ar||'—'}</td>
+      <td style="padding:4px 8px;color:var(--g600)">${c.en||''}</td>
+      <td style="padding:4px 8px;font-size:10px;color:var(--g600)">${c.id||''}</td>
+    </tr>`).join('');
+    openModal(`<h3>👁 ${backupId}</h3>
+      <div style="font-size:11px;color:var(--g600);margin-bottom:8px">${lang==='ar'?'المدن في هذه النسخة':'Cities in this backup'}: <b>${cities.length}</b></div>
+      <div style="max-height:340px;overflow:auto;border:1px solid var(--g200);border-radius:6px">
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead style="background:var(--g50)"><tr>
+            <th style="padding:6px 8px;text-align:start">${lang==='ar'?'الكود':'Code'}</th>
+            <th style="padding:6px 8px;text-align:start">${lang==='ar'?'عربي':'Arabic'}</th>
+            <th style="padding:6px 8px;text-align:start">${lang==='ar'?'إنجليزي':'English'}</th>
+            <th style="padding:6px 8px;text-align:start">ID</th>
+          </tr></thead>
+          <tbody>${rows||`<tr><td colspan="4" style="padding:20px;text-align:center;color:var(--g600)">—</td></tr>`}</tbody>
+        </table>
+      </div>
+      <div class="form-row" style="margin-top:10px">
+        <button class="btn btn-success btn-full" onclick="restoreCitiesFromBackup('${backupId}')">♻️ ${lang==='ar'?'استعادة المدن من هذه النسخة':'Restore cities from this backup'}</button>
+        <button class="btn btn-full" onclick="openRestorePicker()">↩️ ${lang==='ar'?'رجوع':'Back'}</button>
+      </div>`);
+  }catch(e){
+    console.error('preview backup failed:',e);
+    toast(lang==='ar'?'فشل المعاينة':'Preview failed');
+  }
+}
+
+async function restoreCitiesFromBackup(backupId){
+  if(!can('edit_cities')){toast(lang==='ar'?'ليس لديك صلاحية':'No permission');return;}
+  if(!confirm(lang==='ar'
+    ?`استعادة قائمة المدن من ${backupId}؟ سيتم استبدال كل المدن الحالية بالمدن من هذه النسخة. (الزونات والمدربات ما تتأثر)`
+    :`Restore cities list from ${backupId}? This replaces ALL current cities with the backup's. (Zones and coaches are NOT affected)`)) return;
+  try{
+    const doc=await db.collection('app').doc(backupId).get();
+    if(!doc.exists){toast(lang==='ar'?'النسخة غير موجودة':'Backup not found');return;}
+    const data=doc.data()||{};
+    const cities=Array.isArray(data.cities)?data.cities:[];
+    if(!cities.length){
+      if(!confirm(lang==='ar'?'النسخة فاضية من المدن! متأكد؟':'This backup has 0 cities! Continue?')) return;
+    }
+    CITIES.splice(0,CITIES.length,...cities);
+    await saveOnly('cities');
+    logHistory(lang==='ar'?'استعادة مدن':'Cities Restored',`${backupId} (${cities.length} ${lang==='ar'?'مدينة':'cities'})`,'import');
+    populateCitySelect();renderCities();renderZones();drawAllZones();
+    closeModal();
+    toast('✅ '+(lang==='ar'?`تم استعادة ${cities.length} مدينة`:`Restored ${cities.length} cities`));
+  }catch(e){
+    console.error('restore cities failed:',e);
+    toast((lang==='ar'?'فشل الاستعادة: ':'Restore failed: ')+e.message);
+  }
 }
 
 // ===================== PRICES =====================
@@ -2752,7 +2890,7 @@ function updatePriceCell(input){
   PRICING[r][c+2]=vat/sessions;
 }
 async function savePricing(){
-  await saveData(true);
+  await saveOnly('config');
   logHistory(lang==='ar'?'تعديل جدول الأسعار':'Pricing Edited',lang==='ar'?'تم تحديث أسعار الباقات':'Package prices updated','edit');
   closeModal();renderPriceTable();calcPrice();
   toast('✅ '+t('coachUpdated'));
@@ -2932,7 +3070,7 @@ async function saveUser(oldUsername){
       isEdit?'edit':'add'
     );
     // CRITICAL: write immediately and wait — admin may close the tab right after.
-    await saveData(true);
+    await saveOnly('users');
     renderUsers();applyTranslations();
     closeModal();toast('✅ '+(lang==='ar'?'تم':'Done'));
   }finally{
@@ -2948,7 +3086,7 @@ async function confirmDeleteUser(username){
   // The Firebase Auth account stays and can be deleted from the Firebase console if you want.
   delete USERS[username];
   logHistory(lang==='ar'?'حذف مستخدم':'User Deleted',u.name_ar,'delete');
-  await saveData(true);   // write immediately, don't risk losing this
+  await saveOnly('users');   // write immediately, don't risk losing this
   renderUsers();toast(t('deleted'));
 }
 
@@ -3016,7 +3154,7 @@ async function saveNewEmoji(){
     }
   }
   buildEmojiMap();
-  await saveData(true);
+  await saveOnly('config');
   logHistory(lang==='ar'?'إضافة إيموجي':'Emoji Added',`${emoji} ${ar} (${code})`,'add');
   renderEmojiLegend();renderCoaches('');
   closeModal();toast('✅ '+(lang==='ar'?'تمت الإضافة':'Added'));
@@ -3037,7 +3175,7 @@ async function confirmDeleteEmoji(key){
     delete SPORT_KEY_MAP[arName];
   }
   buildEmojiMap();
-  await saveData(true);
+  await saveOnly('config');
   logHistory(lang==='ar'?'حذف إيموجي':'Emoji Deleted',e.emoji+' '+e.ar,'delete');
   renderEmojiLegend();renderCoaches('');
   toast(t('deleted'));
