@@ -845,13 +845,12 @@ async function loadData(){
     }
   }catch(e){
     console.error('loadData failed:',e);
-    toast(lang==='ar'?'فشل تحميل البيانات':'Failed to load data');
-    // Fallback to in-memory defaults so the UI still renders
-    ZONES=JSON.parse(JSON.stringify(ZONES_DEFAULT));
-    COACHES=JSON.parse(JSON.stringify(COACHES_DEFAULT));
-    TEAMS=JSON.parse(JSON.stringify(TEAMS_DEFAULT));
-    CITIES=JSON.parse(JSON.stringify(CITIES_DEFAULT));
-    USERS={};
+    toast(lang==='ar'?'فشل تحميل البيانات — جرب مرة ثانية':'Failed to load data — try again');
+    // CRITICAL: do NOT fall back to in-memory defaults. The previous behavior
+    // would put DEFAULT cities/coaches/zones in memory after a network error,
+    // and the next save would overwrite Firestore with those defaults — wiping
+    // all of the admin's real data. Better to fail the login than risk that.
+    throw e;
   }
 }
 
@@ -1137,7 +1136,13 @@ async function doLogin(){
     scheduleDailyBackup();
   }catch(e){
     console.error('Login failed:',e);
-    errEl.textContent=lang==='ar'?'بيانات الدخول غير صحيحة':'Invalid credentials';
+    // Distinguish auth errors from network/Firestore errors. Showing
+    // "Invalid credentials" for a load failure would mislead the admin into
+    // changing their password unnecessarily.
+    const isAuth=e&&typeof e.code==='string'&&e.code.startsWith('auth/');
+    errEl.textContent=isAuth
+      ?(lang==='ar'?'بيانات الدخول غير صحيحة':'Invalid credentials')
+      :(lang==='ar'?'فشل الاتصال بالخادم — تحقق من النت وأعد المحاولة':'Server connection failed — check your network and retry');
     errEl.style.display='block';
   }finally{
     if(btn)btn.disabled=false;
@@ -1886,19 +1891,46 @@ function importCoaches(rows){
     };
   }).filter(c=>c.name);
   if(!newCoaches.length){toast('❌ لا توجد بيانات صالحة');return;}
-  const dataStr=JSON.stringify(newCoaches).replace(/\\/g,'\\\\').replace(/`/g,'\\`');
-  openModal(`<h3>📥 ${lang==='ar'?'استيراد المدربات':'Import Coaches'}</h3>
-    <div style="background:var(--g50);border-radius:8px;padding:12px;margin-bottom:12px;text-align:center">
-      <div style="font-size:28px;margin-bottom:4px">👩</div>
-      <div style="font-size:18px;font-weight:800;color:var(--primary)">${newCoaches.length}</div>
-      <div style="font-size:12px;color:var(--g600)">${t('importConfirmCoaches')}</div>
+  // City breakdown — show admin exactly what will change
+  const breakdown={};
+  newCoaches.forEach(c=>{
+    const cid=c.cityId||'riyadh';
+    if(!breakdown[cid])breakdown[cid]={cityId:cid,count:0};
+    breakdown[cid].count++;
+  });
+  const fileCityIds=new Set(Object.keys(breakdown));
+  const otherCityCount=COACHES.filter(c=>!fileCityIds.has(c.cityId||'riyadh')).length;
+  const otherCityNames=[...new Set(COACHES.filter(c=>!fileCityIds.has(c.cityId||'riyadh')).map(c=>{
+    const ci=CITIES.find(x=>x.id===(c.cityId||'riyadh'));return ci?(lang==='ar'?ci.ar:ci.en):c.cityId;
+  }))];
+  const cityRows=Object.values(breakdown).map(b=>{
+    const ci=CITIES.find(x=>x.id===b.cityId);
+    const cityName=ci?(lang==='ar'?ci.ar:ci.en):b.cityId;
+    const existingInCity=COACHES.filter(c=>(c.cityId||'riyadh')===b.cityId).length;
+    return `<div style="padding:8px 10px;border-bottom:1px solid var(--g200);font-size:12px;display:flex;justify-content:space-between">
+      <span style="font-weight:700">${cityName}</span>
+      <span style="font-size:11px;color:var(--g600)">📥 ${b.count} ${lang==='ar'?'في الملف':'in file'} · ${lang==='ar'?'موجود حالياً':'currently'}: ${existingInCity}</span>
+    </div>`;
+  }).join('');
+  const safetyNote=otherCityCount>0
+    ?`<div style="background:#ECFDF5;border:1px solid #A7F3D0;color:#065F46;border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:11px;line-height:1.5">
+        ✅ ${lang==='ar'?`<b>${otherCityCount}</b> مدربة في <b>${otherCityNames.join('، ')}</b> ما راح تتأثر — الاستبدال محصور في مدن الملف فقط`:`<b>${otherCityCount}</b> coaches in <b>${otherCityNames.join(', ')}</b> will NOT be affected — replace is scoped to cities in the file`}
+      </div>`
+    :'';
+  openModal(`<h3>📥 ${lang==='ar'?'معاينة استيراد المدربات':'Import Coaches Preview'}</h3>
+    <div style="background:var(--g50);border-radius:8px;padding:10px;margin-bottom:10px;text-align:center">
+      <div style="font-size:24px;margin-bottom:2px">👩</div>
+      <div style="font-size:18px;font-weight:800;color:var(--primary)">${newCoaches.length} ${lang==='ar'?'مدربة':'coaches'}</div>
+      <div style="font-size:11px;color:var(--g600)">${lang==='ar'?'موزّعة على':'across'} ${Object.keys(breakdown).length} ${lang==='ar'?'مدينة':'cities'}</div>
     </div>
+    <div style="background:#fff;border:1px solid var(--g200);border-radius:8px;margin-bottom:10px;max-height:200px;overflow-y:auto">${cityRows}</div>
+    ${safetyNote}
     <div class="form-row">
-      <button class="btn btn-primary btn-full" onclick="applyImport('coaches','replace',JSON.parse(document.getElementById('import-data-coaches').value))">${t('replaceAll')}</button>
+      <button class="btn btn-primary btn-full" onclick="applyImport('coaches','replace',JSON.parse(document.getElementById('import-data-coaches').value))">${lang==='ar'?'🔁 استبدال (مدن الملف فقط)':'🔁 Replace (file cities only)'}</button>
       <button class="btn btn-success btn-full" onclick="applyImport('coaches','merge',JSON.parse(document.getElementById('import-data-coaches').value))">${t('mergData')}</button>
     </div>
     <textarea id="import-data-coaches" style="display:none">${JSON.stringify(newCoaches)}</textarea>
-    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">${t('cancel')}</button>`);
+    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">${lang==='ar'?'❌ رفض':'❌ Reject'}</button>`);
 }
 
 function importZones(rows){
@@ -1945,8 +1977,8 @@ function importZones(rows){
       <div style="font-size:10px;color:var(--g600)">IDs: ${idsPreview}</div>
     </div>`;
   }).join('');
-  const warnReplaceAll=otherCityZones.length>0?`<div style="background:var(--red-tint);border:1px solid #FECACA;color:var(--red);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:11px;line-height:1.5">
-      ⚠️ ${lang==='ar'?`زر "استبدال الكل" راح يحذف <b>${otherCityZones.length}</b> زون موجود في <b>${otherCitiesCount}</b> مدينة غير مذكورة في الملف`:`"Replace All" will delete <b>${otherCityZones.length}</b> existing zones in <b>${otherCitiesCount}</b> other cities not in the file`}
+  const safetyNote=otherCityZones.length>0?`<div style="background:#ECFDF5;border:1px solid #A7F3D0;color:#065F46;border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:11px;line-height:1.5">
+      ✅ ${lang==='ar'?`<b>${otherCityZones.length}</b> زون في <b>${otherCitiesCount}</b> مدينة غير موجودة في الملف ما راح تتأثر — الاستبدال محصور في مدن الملف فقط`:`<b>${otherCityZones.length}</b> zones in <b>${otherCitiesCount}</b> other cities (not in file) will NOT be affected — replace is scoped to cities in the file`}
     </div>`:'';
   openModal(`<h3>📥 ${lang==='ar'?'معاينة استيراد الزونات':'Import Zones Preview'}</h3>
     <div style="background:var(--g50);border-radius:8px;padding:10px;margin-bottom:10px;text-align:center">
@@ -1955,9 +1987,9 @@ function importZones(rows){
       <div style="font-size:11px;color:var(--g600)">${lang==='ar'?'موزّعة على':'across'} ${Object.keys(breakdown).length} ${lang==='ar'?'مدينة':'cities'}</div>
     </div>
     <div style="background:#fff;border:1px solid var(--g200);border-radius:8px;margin-bottom:10px;max-height:240px;overflow-y:auto">${cityRows}</div>
-    ${warnReplaceAll}
+    ${safetyNote}
     <div class="form-row">
-      <button class="btn btn-primary btn-full" onclick="applyImport('zones','replace',JSON.parse(document.getElementById('import-data-zones').value))">${t('replaceAll')}</button>
+      <button class="btn btn-primary btn-full" onclick="applyImport('zones','replace',JSON.parse(document.getElementById('import-data-zones').value))">${lang==='ar'?'🔁 استبدال (مدن الملف فقط)':'🔁 Replace (file cities only)'}</button>
       <button class="btn btn-success btn-full" onclick="applyImport('zones','merge',JSON.parse(document.getElementById('import-data-zones').value))">${t('mergData')}</button>
     </div>
     <textarea id="import-data-zones" style="display:none">${JSON.stringify(newZones)}</textarea>
@@ -1988,11 +2020,25 @@ async function importCities(rows){
     lng:parseFloat(r[5])||0,
   })).filter(c=>c.id&&c.code&&c.ar);
   if(!newCities.length){toast('❌ لا توجد بيانات صالحة');return;}
-  // replace behavior
-  if(!confirm(lang==='ar'?`استبدال المدن الحالية بـ ${newCities.length} مدينة؟`:`Replace current cities with ${newCities.length}?`))return;
-  CITIES.splice(0,CITIES.length,...newCities);
+  // MERGE-ONLY semantics: never delete cities that aren't in the file. This
+  // prevents the catastrophic case where uploading a partial cities list
+  // wipes everything else (e.g., loses Al-Qassim because the file only had
+  // the 5 default cities). We compute the diff first, ask for confirmation,
+  // and only mutate CITIES once the admin confirms.
+  let added=0, updated=0;
+  newCities.forEach(nc=>{
+    if(CITIES.find(c=>c.id===nc.id))updated++; else added++;
+  });
+  if(!confirm(lang==='ar'
+    ?`دمج ${newCities.length} مدينة من الملف؟\n• ${added} جديدة سيتم إضافتها\n• ${updated} موجودة سيتم تحديثها\n• المدن الباقية اللي مو في الملف ما تتأثر`
+    :`Merge ${newCities.length} cities from file?\n• ${added} new will be added\n• ${updated} existing will be updated\n• Cities not in file are NOT affected`)) return;
+  newCities.forEach(nc=>{
+    const idx=CITIES.findIndex(c=>c.id===nc.id);
+    if(idx>=0)CITIES[idx]={...CITIES[idx],...nc};
+    else CITIES.push(nc);
+  });
   await saveOnly('cities');populateCitySelect();renderCities();drawAllZones();
-  logHistory(lang==='ar'?'استيراد مدن':'Cities Import', newCities.length+' '+(lang==='ar'?'مدينة':'cities'),'import');
+  logHistory(lang==='ar'?'استيراد مدن (دمج)':'Cities Import (merge)', `+${added} / ~${updated}`,'import');
   toast(t('importSuccess'));
 }
 
@@ -2025,23 +2071,38 @@ async function importPricing(rows){
 
 async function applyImport(type,mode,data){
   if(!Array.isArray(data)){try{data=JSON.parse(data);}catch(e){toast('❌ data parse error');return;}}
+  // CITY-SCOPED REPLACE: when mode==='replace', we only delete existing rows
+  // in cities that appear in the imported file. Cities NOT in the file are
+  // untouched. This prevents the catastrophic "uploading Riyadh-only file
+  // wipes Jeddah/Dammam coaches" bug.
+  const fileCityIds=new Set(data.map(r=>r.cityId||'riyadh'));
   if(type==='coaches'){
-    if(mode==='replace')COACHES.length=0;
+    if(mode==='replace'){
+      // Drop only coaches whose city is mentioned in the file
+      for(let i=COACHES.length-1;i>=0;i--){
+        if(fileCityIds.has(COACHES[i].cityId||'riyadh'))COACHES.splice(i,1);
+      }
+    }
     data.forEach(c=>{
       if(mode==='merge'){const idx=COACHES.findIndex(x=>x.name===c.name||(x.id&&x.id===c.id));if(idx>=0){COACHES[idx]=c;return;}}
       COACHES.push(c);
     });
   }else if(type==='zones'){
-    if(mode==='replace')ZONES.length=0;
+    if(mode==='replace'){
+      // Drop only zones whose city is mentioned in the file
+      for(let i=ZONES.length-1;i>=0;i--){
+        if(fileCityIds.has(ZONES[i].cityId||'riyadh'))ZONES.splice(i,1);
+      }
+    }
     data.forEach(z=>{
       if(mode==='merge'){const idx=ZONES.findIndex(x=>x.id===z.id&&(x.cityId||'riyadh')===(z.cityId||'riyadh'));if(idx>=0){ZONES[idx]=z;return;}}
       ZONES.push(z);
     });
-    ZONES.sort((a,b)=>a.id-b.id);
+    ZONES.sort((a,b)=>{if(a.cityId===b.cityId)return a.id-b.id;return (a.cityId||'').localeCompare(b.cityId||'');});
   }
   logHistory(
     lang==='ar'?'استيراد ملف Excel':'Excel Import',
-    (type==='coaches'?(lang==='ar'?'مدربات':'Coaches'):type==='zones'?(lang==='ar'?'زونات':'Zones'):'إيموجي')+' — '+data.length+' '+(lang==='ar'?'صف':'rows')+' — '+(mode==='replace'?(lang==='ar'?'استبدال':'Replace'):(lang==='ar'?'دمج':'Merge')),
+    (type==='coaches'?(lang==='ar'?'مدربات':'Coaches'):type==='zones'?(lang==='ar'?'زونات':'Zones'):'إيموجي')+' — '+data.length+' '+(lang==='ar'?'صف':'rows')+' — '+(mode==='replace'?(lang==='ar'?'استبدال (في مدن الملف فقط)':'Replace (file cities only)'):(lang==='ar'?'دمج':'Merge')),
     'import'
   );
   // Only write the doc that was actually replaced — coaches OR zones, not both.
