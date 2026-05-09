@@ -2712,16 +2712,20 @@ async function confirmDeleteCity(idx){
 }
 
 // ===================== BACKUP RESTORE =====================
-// Lists every backup_YYYY-MM-DD doc in Firestore and lets an admin restore the
-// `cities` array from any of them. Restores ONLY cities (not coaches/zones)
-// so we don't roll back legitimate edits to other data.
+// Lists every backup_YYYY-MM-DD doc in Firestore and lets an admin restore
+// any single data type (cities, coaches, zones, or teams) from any backup.
+// Each restore writes ONLY the chosen type's doc — other data is untouched —
+// so admins can roll back one corrupted dataset without losing legitimate
+// edits to others.
 async function openRestorePicker(){
-  if(!can('edit_cities')){toast(lang==='ar'?'ليس لديك صلاحية':'No permission');return;}
+  if(!can('edit_cities')&&!can('edit_zones')&&!can('delete_coaches')){
+    toast(lang==='ar'?'ليس لديك صلاحية':'No permission');return;
+  }
   openModal(`<h3>♻️ ${lang==='ar'?'استعادة من نسخة احتياطية':'Restore from Backup'}</h3>
     <div style="font-size:11px;color:var(--g600);background:var(--g50);padding:8px;border-radius:6px;margin-bottom:10px;line-height:1.6">
-      ${lang==='ar'?'النظام يأخذ نسخة احتياطية يومية الساعة 23:59. اختر نسخة لتستعرض المدن فيها، ثم استعد المدن منها فقط (الزونات والمدربات ما تتأثر).':'A backup is taken daily at 23:59. Pick one to preview cities and restore only the cities.'}
+      ${lang==='ar'?'كل نسخة احتياطية تحتوي على المدن والمدربات والزونات والفرق. اضغط 👁 لمعاينة، أو اختر نوع البيانات الذي تريد استعادته. الأنواع الأخرى لا تتأثر.':'Each backup contains cities, coaches, zones, and teams. Click 👁 to preview, or pick a single type to restore. Other types are not affected.'}
     </div>
-    <div id="backupList" style="max-height:340px;overflow-y:auto;border:1px solid var(--g200);border-radius:8px">
+    <div id="backupList" style="max-height:380px;overflow-y:auto;border:1px solid var(--g200);border-radius:8px">
       <div style="padding:20px;text-align:center;color:var(--g600)">⏳ ${lang==='ar'?'جاري التحميل...':'Loading...'}</div>
     </div>
     <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">${t('cancel')}</button>`);
@@ -2731,7 +2735,15 @@ async function openRestorePicker(){
     snap.forEach(doc=>{
       if(doc.id.startsWith('backup_')){
         const d=doc.data()||{};
-        backups.push({id:doc.id, date:d.date||doc.id.replace('backup_',''), label:d.label||'', citiesCount:(d.cities||[]).length});
+        backups.push({
+          id:doc.id,
+          date:d.date||doc.id.replace('backup_',''),
+          label:d.label||'',
+          citiesCount:(d.cities||[]).length,
+          coachesCount:(d.coaches||[]).length,
+          zonesCount:(d.zones||[]).length,
+          teamsCount:(d.teams||[]).length,
+        });
       }
     });
     backups.sort((a,b)=>b.date.localeCompare(a.date)); // newest first
@@ -2742,13 +2754,20 @@ async function openRestorePicker(){
       return;
     }
     el.innerHTML=backups.map(b=>`
-      <div style="display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--g200)">
-        <div style="flex:1">
-          <div style="font-weight:700;font-size:13px">📅 ${b.date}</div>
-          <div style="font-size:10px;color:var(--g600)">🏙 ${b.citiesCount} ${lang==='ar'?'مدينة':'cities'}${b.label?' · '+b.label:''}</div>
+      <div style="padding:10px;border-bottom:1px solid var(--g200)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <div style="flex:1">
+            <div style="font-weight:700;font-size:13px">📅 ${b.date}</div>
+            <div style="font-size:10px;color:var(--g600)">🏙 ${b.citiesCount} · 👩 ${b.coachesCount} · 🔵 ${b.zonesCount} · 🏢 ${b.teamsCount}${b.label?' · '+b.label:''}</div>
+          </div>
+          <button class="btn btn-icon" onclick="previewBackup('${b.id}')" title="${lang==='ar'?'معاينة':'Preview'}">👁</button>
         </div>
-        <button class="btn btn-icon" onclick="previewBackup('${b.id}')" title="${lang==='ar'?'معاينة':'Preview'}">👁</button>
-        <button class="btn btn-icon" style="border-color:#16A34A;color:#16A34A" onclick="restoreCitiesFromBackup('${b.id}')" title="${lang==='ar'?'استعادة المدن':'Restore Cities'}">♻️</button>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          ${can('edit_cities')?`<button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','cities')">♻️ ${lang==='ar'?'مدن':'Cities'} (${b.citiesCount})</button>`:''}
+          ${can('delete_coaches')?`<button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','coaches')">♻️ ${lang==='ar'?'مدربات':'Coaches'} (${b.coachesCount})</button>`:''}
+          ${can('edit_zones')?`<button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','zones')">♻️ ${lang==='ar'?'زونات':'Zones'} (${b.zonesCount})</button>`:''}
+          ${can('edit_cities')?`<button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','teams')">♻️ ${lang==='ar'?'فرق':'Teams'} (${b.teamsCount})</button>`:''}
+        </div>
       </div>`).join('');
   }catch(e){
     console.error('list backups failed:',e);
@@ -2762,29 +2781,53 @@ async function previewBackup(backupId){
     const doc=await db.collection('app').doc(backupId).get();
     if(!doc.exists){toast(lang==='ar'?'النسخة غير موجودة':'Backup not found');return;}
     const data=doc.data()||{};
-    const cities=data.cities||[];
-    const rows=cities.map(c=>`<tr>
-      <td style="padding:4px 8px;font-weight:700">${c.code||'—'}</td>
-      <td style="padding:4px 8px">${c.ar||'—'}</td>
-      <td style="padding:4px 8px;color:var(--g600)">${c.en||''}</td>
-      <td style="padding:4px 8px;font-size:10px;color:var(--g600)">${c.id||''}</td>
-    </tr>`).join('');
+    const cities=data.cities||[]; const coaches=data.coaches||[]; const zones=data.zones||[]; const teams=data.teams||[];
+    // City breakdown for coaches and zones (per-city counts in backup vs current)
+    const coachByCity={}; coaches.forEach(c=>{const k=c.cityId||'riyadh'; coachByCity[k]=(coachByCity[k]||0)+1;});
+    const zoneByCity={};  zones.forEach(z=>{const k=z.cityId||'riyadh'; zoneByCity[k]=(zoneByCity[k]||0)+1;});
+    const curCoachByCity={}; COACHES.forEach(c=>{const k=c.cityId||'riyadh'; curCoachByCity[k]=(curCoachByCity[k]||0)+1;});
+    const curZoneByCity={};  ZONES.forEach(z=>{const k=z.cityId||'riyadh';  curZoneByCity[k]=(curZoneByCity[k]||0)+1;});
+    const allCityIds=[...new Set([...Object.keys(coachByCity),...Object.keys(zoneByCity),...Object.keys(curCoachByCity),...Object.keys(curZoneByCity)])];
+    const cityRows=allCityIds.map(cid=>{
+      const c=CITIES.find(x=>x.id===cid)||cities.find(x=>x.id===cid);
+      const name=c?(lang==='ar'?c.ar:c.en):cid;
+      return `<tr>
+        <td style="padding:4px 8px;font-weight:700">${name}</td>
+        <td style="padding:4px 8px;text-align:center">${coachByCity[cid]||0} <span style="color:var(--g400)">/ ${curCoachByCity[cid]||0}</span></td>
+        <td style="padding:4px 8px;text-align:center">${zoneByCity[cid]||0} <span style="color:var(--g400)">/ ${curZoneByCity[cid]||0}</span></td>
+      </tr>`;
+    }).join('');
+    const cityList=cities.map(c=>`<span style="display:inline-block;background:var(--g50);padding:2px 8px;border-radius:10px;margin:2px;font-size:11px">${c.code} ${lang==='ar'?c.ar:c.en}</span>`).join('');
     openModal(`<h3>👁 ${backupId}</h3>
-      <div style="font-size:11px;color:var(--g600);margin-bottom:8px">${lang==='ar'?'المدن في هذه النسخة':'Cities in this backup'}: <b>${cities.length}</b></div>
-      <div style="max-height:340px;overflow:auto;border:1px solid var(--g200);border-radius:6px">
+      <div style="font-size:11px;color:var(--g600);margin-bottom:8px;line-height:1.6">
+        ${lang==='ar'?'محتوى النسخة (المقارنة بالحالي)':'Backup contents (vs current)'}:
+        <b>🏙 ${cities.length}</b> ${lang==='ar'?'مدينة':'cities'} ·
+        <b>👩 ${coaches.length}</b> ${lang==='ar'?'مدربة':'coaches'} (${lang==='ar'?'حالياً':'now'}: ${COACHES.length}) ·
+        <b>🔵 ${zones.length}</b> ${lang==='ar'?'زون':'zones'} (${lang==='ar'?'حالياً':'now'}: ${ZONES.length}) ·
+        <b>🏢 ${teams.length}</b> ${lang==='ar'?'فريق':'teams'} (${lang==='ar'?'حالياً':'now'}: ${TEAMS.length})
+      </div>
+      <div style="font-weight:700;font-size:12px;margin:8px 0 4px">🏙 ${lang==='ar'?'المدن':'Cities'}</div>
+      <div style="max-height:90px;overflow-y:auto;background:#fff;border:1px solid var(--g200);border-radius:6px;padding:6px">${cityList||'<span style="color:var(--g600)">—</span>'}</div>
+      <div style="font-weight:700;font-size:12px;margin:10px 0 4px">📊 ${lang==='ar'?'مدربات / زونات حسب المدينة (نسخة / حالي)':'Coaches / Zones per city (backup / current)'}</div>
+      <div style="max-height:200px;overflow:auto;border:1px solid var(--g200);border-radius:6px">
         <table style="width:100%;font-size:12px;border-collapse:collapse">
-          <thead style="background:var(--g50)"><tr>
-            <th style="padding:6px 8px;text-align:start">${lang==='ar'?'الكود':'Code'}</th>
-            <th style="padding:6px 8px;text-align:start">${lang==='ar'?'عربي':'Arabic'}</th>
-            <th style="padding:6px 8px;text-align:start">${lang==='ar'?'إنجليزي':'English'}</th>
-            <th style="padding:6px 8px;text-align:start">ID</th>
+          <thead style="background:var(--g50);position:sticky;top:0"><tr>
+            <th style="padding:6px 8px;text-align:start">${lang==='ar'?'المدينة':'City'}</th>
+            <th style="padding:6px 8px">👩 ${lang==='ar'?'مدربات':'Coaches'}</th>
+            <th style="padding:6px 8px">🔵 ${lang==='ar'?'زونات':'Zones'}</th>
           </tr></thead>
-          <tbody>${rows||`<tr><td colspan="4" style="padding:20px;text-align:center;color:var(--g600)">—</td></tr>`}</tbody>
+          <tbody>${cityRows||`<tr><td colspan="3" style="padding:12px;text-align:center;color:var(--g600)">—</td></tr>`}</tbody>
         </table>
       </div>
-      <div class="form-row" style="margin-top:10px">
-        <button class="btn btn-success btn-full" onclick="restoreCitiesFromBackup('${backupId}')">♻️ ${lang==='ar'?'استعادة المدن من هذه النسخة':'Restore cities from this backup'}</button>
-        <button class="btn btn-full" onclick="openRestorePicker()">↩️ ${lang==='ar'?'رجوع':'Back'}</button>
+      <div style="font-size:10px;color:var(--g600);margin-top:8px;line-height:1.5">
+        ${lang==='ar'?'الأرقام بالأسود = من النسخة، الرمادية = الحالية. لو الفرق كبير في نوع معيّن، استعده.':'Black numbers = from backup, gray = current. If a count differs a lot, restore that type.'}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:10px">
+        ${can('edit_cities')?`<button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','cities')">♻️ ${lang==='ar'?'استعد المدن':'Restore Cities'}</button>`:''}
+        ${can('delete_coaches')?`<button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','coaches')">♻️ ${lang==='ar'?'استعد المدربات':'Restore Coaches'}</button>`:''}
+        ${can('edit_zones')?`<button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','zones')">♻️ ${lang==='ar'?'استعد الزونات':'Restore Zones'}</button>`:''}
+        ${can('edit_cities')?`<button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','teams')">♻️ ${lang==='ar'?'استعد الفرق':'Restore Teams'}</button>`:''}
+        <button class="btn" style="font-size:11px;padding:6px 10px" onclick="openRestorePicker()">↩️ ${lang==='ar'?'رجوع':'Back'}</button>
       </div>`);
   }catch(e){
     console.error('preview backup failed:',e);
@@ -2792,27 +2835,38 @@ async function previewBackup(backupId){
   }
 }
 
-async function restoreCitiesFromBackup(backupId){
-  if(!can('edit_cities')){toast(lang==='ar'?'ليس لديك صلاحية':'No permission');return;}
+// Restore a single data type from a backup. The OTHER types are untouched.
+// type ∈ {'cities','coaches','zones','teams'}
+async function restoreFromBackup(backupId, type){
+  const labels={cities:'المدن',coaches:'المدربات',zones:'الزونات',teams:'الفرق'};
+  const labelsEn={cities:'Cities',coaches:'Coaches',zones:'Zones',teams:'Teams'};
+  const label=lang==='ar'?labels[type]:labelsEn[type];
+  // Permission gate per type
+  const permOk=(type==='cities'&&can('edit_cities'))||(type==='coaches'&&can('delete_coaches'))||(type==='zones'&&can('edit_zones'))||(type==='teams'&&can('edit_cities'));
+  if(!permOk){toast(lang==='ar'?'ليس لديك صلاحية':'No permission');return;}
+  const currentArr=type==='cities'?CITIES:type==='coaches'?COACHES:type==='zones'?ZONES:TEAMS;
   if(!confirm(lang==='ar'
-    ?`استعادة قائمة المدن من ${backupId}؟ سيتم استبدال كل المدن الحالية بالمدن من هذه النسخة. (الزونات والمدربات ما تتأثر)`
-    :`Restore cities list from ${backupId}? This replaces ALL current cities with the backup's. (Zones and coaches are NOT affected)`)) return;
+    ?`استعادة قائمة ${label} من ${backupId}؟\n\n• ${currentArr.length} عنصر حالي سيتم استبداله بالكامل\n• الأنواع الأخرى ما تتأثر`
+    :`Restore ${label} list from ${backupId}?\n\n• ${currentArr.length} current items will be fully replaced\n• Other types are NOT affected`)) return;
   try{
     const doc=await db.collection('app').doc(backupId).get();
     if(!doc.exists){toast(lang==='ar'?'النسخة غير موجودة':'Backup not found');return;}
     const data=doc.data()||{};
-    const cities=Array.isArray(data.cities)?data.cities:[];
-    if(!cities.length){
-      if(!confirm(lang==='ar'?'النسخة فاضية من المدن! متأكد؟':'This backup has 0 cities! Continue?')) return;
+    const arr=Array.isArray(data[type])?data[type]:[];
+    if(!arr.length){
+      if(!confirm(lang==='ar'?`النسخة فاضية من ${label}! متأكد؟`:`This backup has 0 ${label}! Continue?`)) return;
     }
-    CITIES.splice(0,CITIES.length,...cities);
-    await saveOnly('cities');
-    logHistory(lang==='ar'?'استعادة مدن':'Cities Restored',`${backupId} (${cities.length} ${lang==='ar'?'مدينة':'cities'})`,'import');
-    populateCitySelect();renderCities();renderZones();drawAllZones();
+    if(type==='cities')  CITIES.splice(0,CITIES.length,...arr);
+    if(type==='coaches') COACHES.splice(0,COACHES.length,...arr);
+    if(type==='zones')   ZONES.splice(0,ZONES.length,...arr);
+    if(type==='teams')   TEAMS.splice(0,TEAMS.length,...arr);
+    await saveOnly(type);
+    logHistory(lang==='ar'?`استعادة ${label}`:`${labelsEn[type]} Restored`,`${backupId} (${arr.length})`,'import');
+    populateCitySelect();renderCities();renderCoaches('');renderZones();drawAllZones();renderStats();
     closeModal();
-    toast('✅ '+(lang==='ar'?`تم استعادة ${cities.length} مدينة`:`Restored ${cities.length} cities`));
+    toast('✅ '+(lang==='ar'?`تم استعادة ${arr.length} ${label}`:`Restored ${arr.length} ${labelsEn[type]}`));
   }catch(e){
-    console.error('restore cities failed:',e);
+    console.error('restore '+type+' failed:',e);
     toast((lang==='ar'?'فشل الاستعادة: ':'Restore failed: ')+e.message);
   }
 }
