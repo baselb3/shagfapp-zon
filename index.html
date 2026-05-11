@@ -496,7 +496,7 @@ const T = {
     downloadEmojis:'⬇️ تحميل قالب Excel للإيموجي',
     exportCoaches:'⬆️ تصدير بيانات المدربات',
     exportZones:'⬆️ تصدير بيانات الزونات',
-    replaceAll:'🔄 استبدال الكل',mergData:'➕ دمج مع البيانات الحالية',
+    replaceAll:'🔄 استبدال الكل',mergData:'🔄 تحديث البيانات',
     importConfirmCoaches:'مدربة جاهزة للاستيراد',
     importConfirmZones:'زون جاهز للاستيراد',
   },
@@ -547,7 +547,7 @@ const T = {
     downloadEmojis:'⬇️ Download Emojis Excel Template',
     exportCoaches:'⬆️ Export Current Coaches Data',
     exportZones:'⬆️ Export Current Zones Data',
-    replaceAll:'🔄 Replace All',mergData:'➕ Merge with Current',
+    replaceAll:'🔄 Replace All',mergData:'🔄 Update Data',
     importConfirmCoaches:'coaches ready to import',
     importConfirmZones:'zones ready to import',
   }
@@ -664,6 +664,10 @@ const USERS_DEFAULT = {
   'shagaf2024':{username:'shagaf2024',pw:'shagaf2024',name_ar:'المدير',name_en:'Admin',role:'admin',permissions:['*']},
   'view123':   {username:'view123',pw:'view123',name_ar:'مشاهد', name_en:'Viewer',role:'custom',permissions:['view_map','view_coaches','view_zones','view_stats','view_emojis','view_prices','view_cities']},
 };
+// The original/super admin. ONLY this account can delete users, delete cities,
+// delete or edit zones, and restore from backups — even if a custom user has
+// the matching permission flags. Locks down destructive ops to one person.
+const SUPER_ADMIN = 'shagaf2024';
 let USERS = {};
 let currentUser=null;
 
@@ -1149,6 +1153,9 @@ async function doLogin(){
   }
 }
 function isAdmin(){return currentUser&&currentUser.role==='admin';}
+// Super-admin gate — only the original account can do destructive/recovery
+// operations (delete user, delete city, delete/edit zone, restore backup).
+function isSuperAdmin(){return !!currentUser && currentUser.username === SUPER_ADMIN;}
 
 async function doLogout(){
   if(!confirm(lang==='ar'?'تأكيد تسجيل الخروج؟':'Confirm logout?'))return;
@@ -1277,9 +1284,9 @@ function showZonePopup(z,idx){
       <span style="color:${c.available?'#16A34A':'#DC2626'}">${c.available?'●':'○'}</span> ${c.name} ${lic} ${se} — ${c.hours}</div>`;
   });
   if(!cs.length)html+=`<div style="font-size:11px;color:#9CA3AF;margin-top:4px">${t('noCoaches')}</div>`;
-  if(can('edit_zones')||can('delete_zones'))html+=`<div style="margin-top:8px;display:flex;gap:5px">
-    ${can('edit_zones')?`<button onclick="openEditZone(${idx});map.closePopup()" style="padding:4px 9px;font-size:11px;border:1px solid #E5E7EB;border-radius:5px;cursor:pointer;background:#fff">✏️</button>`:''}
-    ${can('delete_zones')?`<button onclick="confirmDeleteZone(${idx});map.closePopup()" style="padding:4px 9px;font-size:11px;border:1px solid #FECACA;border-radius:5px;cursor:pointer;color:#DC2626;background:#fff">🗑</button>`:''}
+  if(isSuperAdmin())html+=`<div style="margin-top:8px;display:flex;gap:5px">
+    <button onclick="openEditZone(${idx});map.closePopup()" style="padding:4px 9px;font-size:11px;border:1px solid #E5E7EB;border-radius:5px;cursor:pointer;background:#fff">✏️</button>
+    <button onclick="confirmDeleteZone(${idx});map.closePopup()" style="padding:4px 9px;font-size:11px;border:1px solid #FECACA;border-radius:5px;cursor:pointer;color:#DC2626;background:#fff">🗑</button>
   </div>`;
   html+='</div>';
   L.popup({maxWidth:280}).setLatLng([z.lat,z.lng]).setContent(html).openOn(map);
@@ -1623,8 +1630,8 @@ function renderZones(){
       <div style="display:flex;gap:3px">
         <a href="https://www.google.com/maps?q=${z.lat},${z.lng}&z=13" target="_blank" class="btn btn-icon" style="text-decoration:none">🗺</a>
         <button class="btn btn-icon" onclick="map.setView([${z.lat},${z.lng}],13)">👁</button>
-        ${can('edit_zones')?`<button class="btn btn-icon" onclick="openEditZone(${i})">✏️</button>`:''}
-        ${can('delete_zones')?`<button class="btn btn-icon btn-danger" onclick="confirmDeleteZone(${i})">🗑</button>`:''}
+        ${isSuperAdmin()?`<button class="btn btn-icon" onclick="openEditZone(${i})">✏️</button>`:''}
+        ${isSuperAdmin()?`<button class="btn btn-icon btn-danger" onclick="confirmDeleteZone(${i})">🗑</button>`:''}
       </div></div>`;
   }).join('');
 }
@@ -1925,9 +1932,11 @@ function importCoaches(rows){
     </div>
     <div style="background:#fff;border:1px solid var(--g200);border-radius:8px;margin-bottom:10px;max-height:200px;overflow-y:auto">${cityRows}</div>
     ${safetyNote}
+    <div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1E3A8A;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:11px;line-height:1.6">
+      🔄 ${lang==='ar'?'سيتم <b>تحديث</b> المدربات الموجودة ببيانات الملف، وإضافة الجديدات فقط. ما يتم حذف أي مدربة غير موجودة في الملف.':'<b>Update</b> existing coaches with file data and add new ones only. No coach is deleted, even if missing from the file.'}
+    </div>
     <div class="form-row">
-      <button class="btn btn-primary btn-full" onclick="applyImport('coaches','replace',JSON.parse(document.getElementById('import-data-coaches').value))">${lang==='ar'?'🔁 استبدال (مدن الملف فقط)':'🔁 Replace (file cities only)'}</button>
-      <button class="btn btn-success btn-full" onclick="applyImport('coaches','merge',JSON.parse(document.getElementById('import-data-coaches').value))">${t('mergData')}</button>
+      <button class="btn btn-success btn-full" onclick="applyImport('coaches','merge',JSON.parse(document.getElementById('import-data-coaches').value))">🔄 ${lang==='ar'?'تحديث البيانات':'Update Data'}</button>
     </div>
     <textarea id="import-data-coaches" style="display:none">${JSON.stringify(newCoaches)}</textarea>
     <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">${lang==='ar'?'❌ رفض':'❌ Reject'}</button>`);
@@ -1988,9 +1997,11 @@ function importZones(rows){
     </div>
     <div style="background:#fff;border:1px solid var(--g200);border-radius:8px;margin-bottom:10px;max-height:240px;overflow-y:auto">${cityRows}</div>
     ${safetyNote}
+    <div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1E3A8A;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:11px;line-height:1.6">
+      🔄 ${lang==='ar'?'سيتم <b>تحديث</b> الزونات الموجودة ببيانات الملف، وإضافة الجديدة فقط. ما يتم حذف أي زون غير موجود في الملف.':'<b>Update</b> existing zones with file data and add new ones only. No zone is deleted, even if missing from the file.'}
+    </div>
     <div class="form-row">
-      <button class="btn btn-primary btn-full" onclick="applyImport('zones','replace',JSON.parse(document.getElementById('import-data-zones').value))">${lang==='ar'?'🔁 استبدال (مدن الملف فقط)':'🔁 Replace (file cities only)'}</button>
-      <button class="btn btn-success btn-full" onclick="applyImport('zones','merge',JSON.parse(document.getElementById('import-data-zones').value))">${t('mergData')}</button>
+      <button class="btn btn-success btn-full" onclick="applyImport('zones','merge',JSON.parse(document.getElementById('import-data-zones').value))">🔄 ${lang==='ar'?'تحديث البيانات':'Update Data'}</button>
     </div>
     <textarea id="import-data-zones" style="display:none">${JSON.stringify(newZones)}</textarea>
     <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">${lang==='ar'?'❌ رفض':'❌ Reject'}</button>`);
@@ -2030,15 +2041,15 @@ async function importCities(rows){
     if(CITIES.find(c=>c.id===nc.id))updated++; else added++;
   });
   if(!confirm(lang==='ar'
-    ?`دمج ${newCities.length} مدينة من الملف؟\n• ${added} جديدة سيتم إضافتها\n• ${updated} موجودة سيتم تحديثها\n• المدن الباقية اللي مو في الملف ما تتأثر`
-    :`Merge ${newCities.length} cities from file?\n• ${added} new will be added\n• ${updated} existing will be updated\n• Cities not in file are NOT affected`)) return;
+    ?`تحديث ${newCities.length} مدينة من الملف؟\n• ${added} جديدة سيتم إضافتها\n• ${updated} موجودة سيتم تحديثها\n• المدن الباقية اللي مو في الملف ما تتأثر`
+    :`Update ${newCities.length} cities from file?\n• ${added} new will be added\n• ${updated} existing will be updated\n• Cities not in file are NOT affected`)) return;
   newCities.forEach(nc=>{
     const idx=CITIES.findIndex(c=>c.id===nc.id);
     if(idx>=0)CITIES[idx]={...CITIES[idx],...nc};
     else CITIES.push(nc);
   });
   await saveOnly('cities');populateCitySelect();renderCities();drawAllZones();
-  logHistory(lang==='ar'?'استيراد مدن (دمج)':'Cities Import (merge)', `+${added} / ~${updated}`,'import');
+  logHistory(lang==='ar'?'تحديث مدن من ملف':'Cities Update', `+${added} / ~${updated}`,'import');
   toast(t('importSuccess'));
 }
 
@@ -2071,38 +2082,24 @@ async function importPricing(rows){
 
 async function applyImport(type,mode,data){
   if(!Array.isArray(data)){try{data=JSON.parse(data);}catch(e){toast('❌ data parse error');return;}}
-  // CITY-SCOPED REPLACE: when mode==='replace', we only delete existing rows
-  // in cities that appear in the imported file. Cities NOT in the file are
-  // untouched. This prevents the catastrophic "uploading Riyadh-only file
-  // wipes Jeddah/Dammam coaches" bug.
-  const fileCityIds=new Set(data.map(r=>r.cityId||'riyadh'));
+  // UPDATE-ONLY semantics: existing rows are updated in place, new rows are
+  // appended, and rows missing from the file are NEVER deleted. The old
+  // "replace" mode was prone to wiping data and is intentionally removed.
   if(type==='coaches'){
-    if(mode==='replace'){
-      // Drop only coaches whose city is mentioned in the file
-      for(let i=COACHES.length-1;i>=0;i--){
-        if(fileCityIds.has(COACHES[i].cityId||'riyadh'))COACHES.splice(i,1);
-      }
-    }
     data.forEach(c=>{
-      if(mode==='merge'){const idx=COACHES.findIndex(x=>x.name===c.name||(x.id&&x.id===c.id));if(idx>=0){COACHES[idx]=c;return;}}
-      COACHES.push(c);
+      const idx=COACHES.findIndex(x=>x.name===c.name||(x.id&&x.id===c.id));
+      if(idx>=0)COACHES[idx]=c; else COACHES.push(c);
     });
   }else if(type==='zones'){
-    if(mode==='replace'){
-      // Drop only zones whose city is mentioned in the file
-      for(let i=ZONES.length-1;i>=0;i--){
-        if(fileCityIds.has(ZONES[i].cityId||'riyadh'))ZONES.splice(i,1);
-      }
-    }
     data.forEach(z=>{
-      if(mode==='merge'){const idx=ZONES.findIndex(x=>x.id===z.id&&(x.cityId||'riyadh')===(z.cityId||'riyadh'));if(idx>=0){ZONES[idx]=z;return;}}
-      ZONES.push(z);
+      const idx=ZONES.findIndex(x=>x.id===z.id&&(x.cityId||'riyadh')===(z.cityId||'riyadh'));
+      if(idx>=0)ZONES[idx]=z; else ZONES.push(z);
     });
     ZONES.sort((a,b)=>{if(a.cityId===b.cityId)return a.id-b.id;return (a.cityId||'').localeCompare(b.cityId||'');});
   }
   logHistory(
-    lang==='ar'?'استيراد ملف Excel':'Excel Import',
-    (type==='coaches'?(lang==='ar'?'مدربات':'Coaches'):type==='zones'?(lang==='ar'?'زونات':'Zones'):'إيموجي')+' — '+data.length+' '+(lang==='ar'?'صف':'rows')+' — '+(mode==='replace'?(lang==='ar'?'استبدال (في مدن الملف فقط)':'Replace (file cities only)'):(lang==='ar'?'دمج':'Merge')),
+    lang==='ar'?'تحديث من ملف Excel':'Excel Update',
+    (type==='coaches'?(lang==='ar'?'مدربات':'Coaches'):type==='zones'?(lang==='ar'?'زونات':'Zones'):'إيموجي')+' — '+data.length+' '+(lang==='ar'?'صف':'rows'),
     'import'
   );
   // Only write the doc that was actually replaced — coaches OR zones, not both.
@@ -2422,6 +2419,8 @@ function openEditZone(idx){
   map.setView([z.lat,z.lng],12);
 }
 async function saveZone(idx){
+  // Editing an existing zone is super-admin only; adding a new one (idx===-1) is allowed for any user with edit_zones.
+  if(idx!==-1&&!isSuperAdmin()){toast(lang==='ar'?'تعديل الزون مسموح فقط للمدير الأساسي':'Only the super admin can edit zones');return;}
   const id=parseInt(document.getElementById('z-id').value);
   const lat=parseFloat(document.getElementById('z-lat').value);
   const lng=parseFloat(document.getElementById('z-lng').value);
@@ -2460,7 +2459,7 @@ function promptNewZone(lat,lng){
     <div class="form-row"><button class="btn btn-success btn-full" onclick="saveZone(-1)">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);
 }
 async function confirmDeleteZone(idx){
-  if(!can('delete_zones')){toast(lang==='ar'?'ليس لديك صلاحية الحذف':'No permission to delete');return;}
+  if(!isSuperAdmin()){toast(lang==='ar'?'حذف الزون مسموح فقط للمدير الأساسي':'Only the super admin can delete zones');return;}
   if(!confirm(t('confirmDelete')+' '+formatZoneId(ZONES[idx])+'?'))return;
   const dz=ZONES[idx];
   ZONES.splice(idx,1);await saveOnly('zones');drawAllZones();renderZones();renderStats();
@@ -2609,14 +2608,20 @@ function renderCities(){
       </div>
       <div style="display:flex;gap:3px">
         ${can('view_map')?`<button class="btn btn-icon" onclick="map.setView([${c.lat},${c.lng}],11);switchCity('${c.id}');switchTab('check')">👁</button>`:''}
-        ${can('edit_cities')?`<button class="btn btn-icon" onclick="openEditCity(${i})">✏️</button>
-        <button class="btn btn-icon btn-danger" onclick="confirmDeleteCity(${i})">🗑</button>`:''}
+        ${can('edit_cities')?`<button class="btn btn-icon" onclick="openEditCity(${i})">✏️</button>`:''}
+        ${isSuperAdmin()?`<button class="btn btn-icon btn-danger" onclick="confirmDeleteCity(${i})">🗑</button>`:''}
       </div></div>`;
   }).join('');
   const ac=document.getElementById('adminCityBtns');
-  if(ac)ac.innerHTML=can('edit_cities')?
-    `<button class="btn btn-primary btn-full" style="margin-top:8px" onclick="openAddCity()">➕ ${lang==='ar'?'إضافة مدينة':'Add City'}</button>
-     <button class="btn btn-full" style="margin-top:6px;border-color:#16A34A;color:#16A34A" onclick="openRestorePicker()">♻️ ${lang==='ar'?'استعادة من نسخة احتياطية':'Restore from backup'}</button>`:'';
+  if(ac){
+    const addBtn=can('edit_cities')
+      ?`<button class="btn btn-primary btn-full" style="margin-top:8px" onclick="openAddCity()">➕ ${lang==='ar'?'إضافة مدينة':'Add City'}</button>`
+      :'';
+    const restoreBtn=isSuperAdmin()
+      ?`<button class="btn btn-full" style="margin-top:6px;border-color:#16A34A;color:#16A34A" onclick="openRestorePicker()">♻️ ${lang==='ar'?'استعادة من نسخة احتياطية':'Restore from backup'}</button>`
+      :'';
+    ac.innerHTML=addBtn+restoreBtn;
+  }
 }
 
 function openAddCity(){
@@ -2691,6 +2696,7 @@ async function saveCity(idx){
 }
 
 async function confirmDeleteCity(idx){
+  if(!isSuperAdmin()){toast(lang==='ar'?'حذف المدينة مسموح فقط للمدير الأساسي':'Only the super admin can delete cities');return;}
   const c=CITIES[idx];
   const zoneCount=ZONES.filter(z=>(z.cityId||'riyadh')===c.id).length;
   const warning=zoneCount>0
@@ -2718,8 +2724,8 @@ async function confirmDeleteCity(idx){
 // so admins can roll back one corrupted dataset without losing legitimate
 // edits to others.
 async function openRestorePicker(){
-  if(!can('edit_cities')&&!can('edit_zones')&&!can('delete_coaches')){
-    toast(lang==='ar'?'ليس لديك صلاحية':'No permission');return;
+  if(!isSuperAdmin()){
+    toast(lang==='ar'?'الاستعادة مسموحة فقط للمدير الأساسي':'Only the super admin can restore from backup');return;
   }
   openModal(`<h3>♻️ ${lang==='ar'?'استعادة من نسخة احتياطية':'Restore from Backup'}</h3>
     <div style="font-size:11px;color:var(--g600);background:var(--g50);padding:8px;border-radius:6px;margin-bottom:10px;line-height:1.6">
@@ -2763,10 +2769,11 @@ async function openRestorePicker(){
           <button class="btn btn-icon" onclick="previewBackup('${b.id}')" title="${lang==='ar'?'معاينة':'Preview'}">👁</button>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:4px">
-          ${can('edit_cities')?`<button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','cities')">♻️ ${lang==='ar'?'مدن':'Cities'} (${b.citiesCount})</button>`:''}
-          ${can('delete_coaches')?`<button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','coaches')">♻️ ${lang==='ar'?'مدربات':'Coaches'} (${b.coachesCount})</button>`:''}
-          ${can('edit_zones')?`<button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','zones')">♻️ ${lang==='ar'?'زونات':'Zones'} (${b.zonesCount})</button>`:''}
-          ${can('edit_cities')?`<button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','teams')">♻️ ${lang==='ar'?'فرق':'Teams'} (${b.teamsCount})</button>`:''}
+          <button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','cities')">♻️ ${lang==='ar'?'مدن':'Cities'} (${b.citiesCount})</button>
+          <button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','coaches')">♻️ ${lang==='ar'?'مدربات':'Coaches'} (${b.coachesCount})</button>
+          <button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','zones')">♻️ ${lang==='ar'?'زونات':'Zones'} (${b.zonesCount})</button>
+          <button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','teams')">♻️ ${lang==='ar'?'فرق':'Teams'} (${b.teamsCount})</button>
+          <button class="btn" style="font-size:11px;padding:4px 8px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${b.id}','users')">♻️ ${lang==='ar'?'مستخدمين':'Users'}</button>
         </div>
       </div>`).join('');
   }catch(e){
@@ -2823,10 +2830,11 @@ async function previewBackup(backupId){
         ${lang==='ar'?'الأرقام بالأسود = من النسخة، الرمادية = الحالية. لو الفرق كبير في نوع معيّن، استعده.':'Black numbers = from backup, gray = current. If a count differs a lot, restore that type.'}
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:10px">
-        ${can('edit_cities')?`<button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','cities')">♻️ ${lang==='ar'?'استعد المدن':'Restore Cities'}</button>`:''}
-        ${can('delete_coaches')?`<button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','coaches')">♻️ ${lang==='ar'?'استعد المدربات':'Restore Coaches'}</button>`:''}
-        ${can('edit_zones')?`<button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','zones')">♻️ ${lang==='ar'?'استعد الزونات':'Restore Zones'}</button>`:''}
-        ${can('edit_cities')?`<button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','teams')">♻️ ${lang==='ar'?'استعد الفرق':'Restore Teams'}</button>`:''}
+        <button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','cities')">♻️ ${lang==='ar'?'استعد المدن':'Restore Cities'}</button>
+        <button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','coaches')">♻️ ${lang==='ar'?'استعد المدربات':'Restore Coaches'}</button>
+        <button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','zones')">♻️ ${lang==='ar'?'استعد الزونات':'Restore Zones'}</button>
+        <button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','teams')">♻️ ${lang==='ar'?'استعد الفرق':'Restore Teams'}</button>
+        <button class="btn" style="font-size:11px;padding:6px 10px;border-color:#16A34A;color:#16A34A" onclick="restoreFromBackup('${backupId}','users')">♻️ ${lang==='ar'?'استعد المستخدمين':'Restore Users'}</button>
         <button class="btn" style="font-size:11px;padding:6px 10px" onclick="openRestorePicker()">↩️ ${lang==='ar'?'رجوع':'Back'}</button>
       </div>`);
   }catch(e){
@@ -2838,33 +2846,41 @@ async function previewBackup(backupId){
 // Restore a single data type from a backup. The OTHER types are untouched.
 // type ∈ {'cities','coaches','zones','teams'}
 async function restoreFromBackup(backupId, type){
-  const labels={cities:'المدن',coaches:'المدربات',zones:'الزونات',teams:'الفرق'};
-  const labelsEn={cities:'Cities',coaches:'Coaches',zones:'Zones',teams:'Teams'};
+  if(!isSuperAdmin()){toast(lang==='ar'?'الاستعادة مسموحة فقط للمدير الأساسي':'Only the super admin can restore');return;}
+  const labels={cities:'المدن',coaches:'المدربات',zones:'الزونات',teams:'الفرق',users:'المستخدمين'};
+  const labelsEn={cities:'Cities',coaches:'Coaches',zones:'Zones',teams:'Teams',users:'Users'};
   const label=lang==='ar'?labels[type]:labelsEn[type];
-  // Permission gate per type
-  const permOk=(type==='cities'&&can('edit_cities'))||(type==='coaches'&&can('delete_coaches'))||(type==='zones'&&can('edit_zones'))||(type==='teams'&&can('edit_cities'));
-  if(!permOk){toast(lang==='ar'?'ليس لديك صلاحية':'No permission');return;}
-  const currentArr=type==='cities'?CITIES:type==='coaches'?COACHES:type==='zones'?ZONES:TEAMS;
+  // users is stored as a {username:obj} map; everything else is an array.
+  const isMap=(type==='users');
+  const currentCount=isMap?Object.keys(USERS).length
+    :(type==='cities'?CITIES:type==='coaches'?COACHES:type==='zones'?ZONES:TEAMS).length;
   if(!confirm(lang==='ar'
-    ?`استعادة قائمة ${label} من ${backupId}؟\n\n• ${currentArr.length} عنصر حالي سيتم استبداله بالكامل\n• الأنواع الأخرى ما تتأثر`
-    :`Restore ${label} list from ${backupId}?\n\n• ${currentArr.length} current items will be fully replaced\n• Other types are NOT affected`)) return;
+    ?`استعادة قائمة ${label} من ${backupId}؟\n\n• ${currentCount} عنصر حالي سيتم استبداله بالكامل\n• الأنواع الأخرى ما تتأثر`
+    :`Restore ${label} list from ${backupId}?\n\n• ${currentCount} current items will be fully replaced\n• Other types are NOT affected`)) return;
   try{
     const doc=await db.collection('app').doc(backupId).get();
     if(!doc.exists){toast(lang==='ar'?'النسخة غير موجودة':'Backup not found');return;}
     const data=doc.data()||{};
-    const arr=Array.isArray(data[type])?data[type]:[];
-    if(!arr.length){
+    const restoredCount=isMap?Object.keys(data.users||{}).length:(Array.isArray(data[type])?data[type].length:0);
+    if(!restoredCount){
       if(!confirm(lang==='ar'?`النسخة فاضية من ${label}! متأكد؟`:`This backup has 0 ${label}! Continue?`)) return;
     }
-    if(type==='cities')  CITIES.splice(0,CITIES.length,...arr);
-    if(type==='coaches') COACHES.splice(0,COACHES.length,...arr);
-    if(type==='zones')   ZONES.splice(0,ZONES.length,...arr);
-    if(type==='teams')   TEAMS.splice(0,TEAMS.length,...arr);
+    if(type==='cities')  CITIES.splice(0,CITIES.length,...(data.cities||[]));
+    if(type==='coaches') COACHES.splice(0,COACHES.length,...(data.coaches||[]));
+    if(type==='zones')   ZONES.splice(0,ZONES.length,...(data.zones||[]));
+    if(type==='teams')   TEAMS.splice(0,TEAMS.length,...(data.teams||[]));
+    if(type==='users'){
+      // Replace the whole users map. Keep currentUser pointed at the restored
+      // record (or fall back to the live one if the restore wiped them out).
+      USERS = {...(data.users||{})};
+      if(currentUser&&USERS[currentUser.username]){currentUser=USERS[currentUser.username];}
+    }
     await saveOnly(type);
-    logHistory(lang==='ar'?`استعادة ${label}`:`${labelsEn[type]} Restored`,`${backupId} (${arr.length})`,'import');
+    logHistory(lang==='ar'?`استعادة ${label}`:`${labelsEn[type]} Restored`,`${backupId} (${restoredCount})`,'import');
     populateCitySelect();renderCities();renderCoaches('');renderZones();drawAllZones();renderStats();
+    if(type==='users')renderUsers();
     closeModal();
-    toast('✅ '+(lang==='ar'?`تم استعادة ${arr.length} ${label}`:`Restored ${arr.length} ${labelsEn[type]}`));
+    toast('✅ '+(lang==='ar'?`تم استعادة ${restoredCount} ${label}`:`Restored ${restoredCount} ${labelsEn[type]}`));
   }catch(e){
     console.error('restore '+type+' failed:',e);
     toast((lang==='ar'?'فشل الاستعادة: ':'Restore failed: ')+e.message);
@@ -3031,8 +3047,8 @@ function renderUsers(){
         </div>
         <div style="display:flex;gap:3px;flex-shrink:0">
           ${can('manage_users')&&u.role!=='admin'?`
-          <button class="btn btn-icon" onclick="openEditUser('${username}')">✏️</button>
-          <button class="btn btn-icon btn-danger" onclick="confirmDeleteUser('${username}')">🗑</button>`:''}
+          <button class="btn btn-icon" onclick="openEditUser('${username}')">✏️</button>`:''}
+          ${isSuperAdmin()&&u.role!=='admin'?`<button class="btn btn-icon btn-danger" onclick="confirmDeleteUser('${username}')">🗑</button>`:''}
         </div>
       </div>
     </div>`;
@@ -3194,6 +3210,7 @@ async function saveUser(oldUsername){
 }
 
 async function confirmDeleteUser(username){
+  if(!isSuperAdmin()){toast(lang==='ar'?'حذف المستخدم مسموح فقط للمدير الأساسي':'Only the super admin can delete users');return;}
   const u=USERS[username];if(!u)return;
   if(u.role==='admin'){toast(lang==='ar'?'لا يمكن حذف المدير':'Cannot delete admin');return;}
   if(!confirm(t('confirmDelete')+' "'+(lang==='ar'?u.name_ar:u.name_en)+'"?'))return;
