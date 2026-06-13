@@ -4273,7 +4273,32 @@ function crmSettings(){
     ${block('noSubReasons',LX('أسباب عدم الاشتراك بعد الحصة المجانية','No-subscription reasons after a free session'),LX('تظهر في متابعة الفري سشن','Shown in free-session follow-up'))}
     ${block('complaintStatuses',LX('مراحل الشكوى (كيف تمشي)','Complaint stages (workflow)'),LX('بالترتيب — آخر مرحلة تُعتبر «تم الحل». زر ↻ ينقل للمرحلة التالية','In order — last stage = “resolved”. The ↻ button moves to the next stage'))}
     ${block('complaintPriorities',LX('أولويات الشكوى','Complaint priorities'),'')}
-    ${block('responsibles',LX('المسؤولون عن الشكاوى','Complaint responsibles'),LX('تظهر في خانة «محوّلة إلى» داخل الشكوى','Shown in the “Assigned to” field'))}`;
+    ${block('responsibles',LX('المسؤولون عن الشكاوى','Complaint responsibles'),LX('تظهر في خانة «محوّلة إلى» داخل الشكوى','Shown in the “Assigned to” field'))}
+    ${crmDangerZone()}`;
+}
+function crmDangerZone(){
+  if(typeof isSuperAdmin!=='function'||!isSuperAdmin())return '';
+  const btn=(fn,label)=>`<button class="btn btn-danger" style="font-size:12px" onclick="${fn}">${label}</button>`;
+  return `<div class="crm-card" style="border:1px solid #FCA5A5;background:#FEF2F2">
+    <h3 style="color:#991B1B">⚠️ ${LX('منطقة الخطر — حذف البيانات (المدير الأساسي فقط)','Danger zone — delete data (super-admin only)')}</h3>
+    <div style="font-size:11px;color:#B91C1C;margin-bottom:10px">${LX('الحذف نهائي ولا يمكن التراجع عنه. لا يؤثر على بيانات الزون (المدربات/الزونات/المدن).','Permanent and cannot be undone. Does NOT affect zone data (coaches/zones/cities).')}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${btn("crmClearData('customers')",LX('حذف العملاء والمبيعات','Delete customers & sales'))}
+      ${btn("crmClearData('free')",LX('حذف الحصص المجانية','Delete free sessions'))}
+      ${btn("crmClearData('service')",LX('حذف الشكاوى/الاقتراحات/الردود','Delete complaints/suggestions/replies'))}
+      ${btn("crmClearData('all')","🗑 "+LX('حذف كل بيانات الـ CRM','Delete ALL CRM data'))}
+    </div></div>`;
+}
+function crmClearData(which){
+  if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('فقط المدير الأساسي (shagaf2024)','Super-admin (shagaf2024) only'));return;}
+  const names={customers:LX('العملاء والمبيعات','customers & sales'),free:LX('الحصص المجانية','free sessions'),service:LX('الشكاوى/الاقتراحات/الردود','complaints/suggestions/replies'),all:LX('كل بيانات الـ CRM','ALL CRM data')};
+  if(!confirm(LX('⚠️ تأكيد حذف ','⚠️ Confirm delete ')+names[which]+LX(' نهائياً؟','? Permanent.')))return;
+  if(!confirm(LX('تأكيد أخير — لا رجعة. متابعة؟','Final confirmation — no undo. Proceed?')))return;
+  const jobs=[];
+  if(which==='customers'||which==='all')jobs.push(db.collection('app').doc('customers').set({list:[]}).then(()=>{CUSTOMERS=[];}));
+  if(which==='free'||which==='all')jobs.push(db.collection('app').doc('free_sessions').set({list:[]}).then(()=>{FREE_SESSIONS=[];}));
+  if(which==='service'||which==='all')jobs.push(db.collection('app').doc('crm_service').set({map:{complaints:[],suggestions:[],desk:[],followups:[]}}).then(()=>{CRM_SVC={complaints:[],suggestions:[],desk:[],followups:[]};}));
+  Promise.all(jobs).then(()=>{toast('🗑 '+LX('تم الحذف','Deleted'));try{logHistory(LX('حذف بيانات CRM','Clear CRM data'),names[which],'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل الحذف: ','❌ Delete failed: ')+e.message);});
 }
 function crmCfgAdd(key){const el=document.getElementById('cfg-'+key);if(!el)return;const v=el.value.trim();if(!v)return;crmSaveCfg(key,(CRM_CFG[key]||[]).concat(v));}
 function crmCfgRemove(key,i){const arr=(CRM_CFG[key]||[]).slice();arr.splice(i,1);crmSaveCfg(key,arr);}
