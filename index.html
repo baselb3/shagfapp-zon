@@ -339,14 +339,12 @@ input:focus,select:focus{outline:none;border-color:var(--primary);background:#ff
       <div id="adminCityBtns"></div>
     </div>
 
-    <!-- USERS TAB -->
+    <!-- USERS TAB (moved to CRM Settings) -->
     <div class="tab-content" id="tab-users">
       <div class="section-title">👥 إدارة المستخدمين والصلاحيات</div>
-      <div style="font-size:11px;color:var(--g600);background:var(--orange-light);padding:8px;border-radius:6px;margin-bottom:10px;line-height:1.7">
-        🔐 هنا تقدر تضيف مستخدمين جدد وتحدد صلاحيات كل واحد بشكل دقيق.
+      <div style="font-size:12px;color:var(--g600);background:var(--orange-light);padding:10px;border-radius:6px;line-height:1.8">
+        🔐 انتقلت إدارة المستخدمين والصلاحيات إلى <b>نظام الـ CRM ← الإعدادات</b>.
       </div>
-      <div id="usersListEl"></div>
-      <div id="adminUsersBtns"></div>
     </div>
 
     <!-- IMPORT TAB -->
@@ -649,7 +647,6 @@ function applyTranslations(){
     'tl-prices':'view_prices',
     'tl-emojis':'view_emojis',
     'tl-cities':'view_cities',
-    'tl-users':'manage_users',
     'tl-import':'import_export',
     'tl-history':'view_history',
   };
@@ -3751,7 +3748,7 @@ function crmNavDefs(){
     if(can('manage_complaints')||can('manage_followups'))ssubs.push(['free',LX('الحصص المجانية','Free Sessions')],['complaints',LX('الشكاوى','Complaints')],['suggestions',LX('الاقتراحات','Suggestions')],['desk',LX('مكتب الردود','Replies Desk')],['waitlist',LX('قائمة الانتظار','Waiting List')]);
     d.push({key:'service',label:LX('🎧 خدمة عملاء','🎧 Customer Service'),subs:ssubs});
   }
-  if(can('manage_complaints'))d.push({key:'settings',label:LX('⚙️ إعدادات','⚙️ Settings')});
+  if(can('manage_complaints')||can('manage_users'))d.push({key:'settings',label:LX('⚙️ إعدادات','⚙️ Settings')});
   return d;
 }
 function crmFirstSec(){const d=crmNavDefs();return d.length?d[0].key:'dash';}
@@ -3797,7 +3794,7 @@ function crmRender(){
     else if(crmState.sub==='desk')b.innerHTML=crmDesk();
     else if(crmState.sub==='waitlist')b.innerHTML=crmWaitlist();
     else b.innerHTML=crmService(crmState.sub||'complaints');
-  }else if(crmState.sec==='settings')b.innerHTML=crmSettings();
+  }else if(crmState.sec==='settings'){b.innerHTML=crmSettings();try{if(typeof renderUsers==='function')renderUsers();}catch(e){}}
   else b.innerHTML='';
 }
 function crmExportXlsx(rows,filename){
@@ -4691,19 +4688,23 @@ function crmLeadSave(leadId){
 }
 // ---------- إعدادات الـ CRM ----------
 function crmSettings(){
-  if(!can('manage_complaints'))return `<div class="crm-empty">${LX('لا صلاحية','No permission')}</div>`;
+  if(!can('manage_complaints')&&!can('manage_users'))return `<div class="crm-empty">${LX('لا صلاحية','No permission')}</div>`;
   const block=(key,title,hint)=>`<div class="crm-card"><h3>${title}</h3>${hint?`<div style="font-size:11px;color:var(--g400);margin-bottom:8px">${hint}</div>`:''}
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${(CRM_CFG[key]||[]).map((it,i)=>`<span class="crm-pill pill-blue" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:4px 10px">${esc(it)} <button onclick="crmCfgRemove('${key}',${i})" style="border:none;background:transparent;cursor:pointer;color:var(--primary);font-weight:700">✕</button></span>`).join('')||`<span style="font-size:12px;color:var(--g400)">${LX('لا عناصر','No items')}</span>`}</div>
     <div style="display:flex;gap:6px"><input id="cfg-${key}" placeholder="${LX('أضف عنصر...','Add item...')}" style="flex:1" onkeydown="if(event.key==='Enter')crmCfgAdd('${key}')"/><button class="btn btn-primary" onclick="crmCfgAdd('${key}')">${LX('إضافة','Add')}</button></div></div>`;
-  return `<h3 style="margin:0 0 12px;font-size:16px">⚙️ ${LX('إعدادات الـ CRM','CRM Settings')}</h3>
+  const cfg=can('manage_complaints')?`
     ${block('noRenewReasons',LX('أسباب عدم التجديد','No-renewal reasons'),LX('تظهر كقائمة اختيار في متابعة الاشتراكات المنتهية','Shown as a dropdown in expiring-subscription follow-up'))}
     ${block('noSubReasons',LX('أسباب عدم الاشتراك بعد الحصة المجانية','No-subscription reasons after a free session'),LX('تظهر في متابعة الفري سشن','Shown in free-session follow-up'))}
     ${block('complaintStatuses',LX('مراحل الشكوى (كيف تمشي)','Complaint stages (workflow)'),LX('بالترتيب — آخر مرحلة تُعتبر «تم الحل». زر ↻ ينقل للمرحلة التالية','In order — last stage = “resolved”. The ↻ button moves to the next stage'))}
     ${block('complaintPriorities',LX('أولويات الشكوى','Complaint priorities'),'')}
     ${block('responsibles',LX('المسؤولون عن الشكاوى','Complaint responsibles'),LX('تظهر في خانة «محوّلة إلى» داخل الشكوى','Shown in the “Assigned to” field'))}
-    ${block('leadStatuses',LX('حالات العملاء الجدد (Leads)','Lead statuses'),LX('قائمة اختيار الحالة في متابعة العملاء الجدد','Status options in lead follow-up'))}
-    ${crmUploadLog()}
-    ${crmDangerZone()}`;
+    ${block('leadStatuses',LX('حالات العملاء الجدد (Leads)','Lead statuses'),LX('قائمة اختيار الحالة في متابعة العملاء الجدد','Status options in lead follow-up'))}`:'';
+  const users=can('manage_users')?`<div class="crm-card"><h3>👥 ${LX('إدارة المستخدمين والصلاحيات','Users & permissions')}</h3>
+      <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('أضف مستخدمين وحدّد صلاحيات كل واحد بدقة — صلاحيات الزون والـ CRM من نفس المكان','Add users and set each one’s permissions precisely — both Zone and CRM permissions from one place')}</div>
+      <div id="usersListEl"></div><div id="adminUsersBtns"></div></div>`:'';
+  return `<h3 style="margin:0 0 12px;font-size:16px">⚙️ ${LX('إعدادات الـ CRM','CRM Settings')}</h3>
+    ${users}${cfg}
+    ${can('manage_complaints')?crmUploadLog()+crmDangerZone():''}`;
 }
 function crmUploadLog(){
   const arr=(CRM_UPLOADS||[]).slice().sort((a,b)=>b.id-a.id).slice(0,50);
