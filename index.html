@@ -438,6 +438,7 @@ input:focus,select:focus{outline:none;border-color:var(--primary);background:#ff
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+      <button id="crmBell" onclick="crmShowNotifs()" title="الإشعارات" style="position:relative;border:none;background:transparent;cursor:pointer;font-size:18px;line-height:1">🔔<span id="crmBellBadge" style="display:none;position:absolute;top:-4px;inset-inline-end:-4px;background:#DC2626;color:#fff;font-size:9px;font-weight:700;min-width:15px;height:15px;border-radius:10px;display:none;align-items:center;justify-content:center;padding:0 3px"></span></button>
       <span id="crmUserLabel">—</span>
       <button class="btn" onclick="doLogout()" title="خروج" style="font-size:11px;padding:3px 8px">🚪</button>
     </div>
@@ -3487,6 +3488,8 @@ auth.onAuthStateChanged(async (fbUser)=>{
 // ============================================================
 let CUSTOMERS=[];
 let FREE_SESSIONS=[];
+let WAITLIST=[];
+let CRM_NOTIFS={};   // { username: [ {id,text,from,at,read,sec,sub} ] }
 let CRM_SVC={complaints:[],suggestions:[],desk:[],followups:[]};
 let CRM_CFG={
   noRenewReasons:['السعر','غيّر النادي','ظروف صحية','انتقل لمدينة أخرى','غير راضٍ عن الخدمة','تعذّر التواصل'],
@@ -3582,6 +3585,65 @@ async function loadCrmData(){
     const cf=await db.collection('app').doc('crm_config').get();
     if(cf.exists){const m=cf.data().map||{};Object.keys(CRM_CFG).forEach(k=>{if(Array.isArray(m[k])&&m[k].length)CRM_CFG[k]=m[k];});}
   }catch(e){console.error('load crm_config',e);}
+  try{
+    const wl=await db.collection('app').doc('crm_waitlist').get();
+    WAITLIST=wl.exists?(wl.data().list||[]):[];
+  }catch(e){console.error('load crm_waitlist',e);}
+  try{
+    const nt=await db.collection('app').doc('crm_notifications').get();
+    CRM_NOTIFS=nt.exists?(nt.data().map||{}):{};
+  }catch(e){console.error('load crm_notifications',e);}
+}
+// push a notification to a user (by username) + persist
+function crmNotify(username,text,sec,sub){
+  if(!username)return;
+  const n={id:Date.now()+Math.floor(performance.now()),text,from:currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'',at:new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'}),read:false,sec:sec||'service',sub:sub||'complaints'};
+  mutateMapDoc('crm_notifications',m=>{const x=Object.assign({},m);x[username]=(x[username]||[]).concat(n).slice(-50);return x;}).then(mm=>{CRM_NOTIFS=mm;crmRenderBell();}).catch(e=>console.error('notify',e));
+}
+// resolve a display name (ar or en) to a username from USERS
+function crmNameToUsername(name){
+  if(typeof USERS==='undefined'||!USERS)return null;
+  const u=Object.values(USERS).find(u=>u.name_ar===name||u.name_en===name||u.username===name);
+  return u?u.username:null;
+}
+// @mention autocomplete (attach to a textarea/input with a sibling <div id="<id>-mbox">)
+function crmMentionInput(el){
+  const box=document.getElementById(el.id+'-mbox');if(!box)return;
+  const upto=el.value.slice(0,el.selectionStart);const m=upto.match(/@([^\s@]*)$/);
+  if(!m){box.style.display='none';return;}
+  const q=m[1].toLowerCase();
+  const names=crmUserNames().filter(n=>n.toLowerCase().indexOf(q)>=0).slice(0,6);
+  if(!names.length){box.style.display='none';return;}
+  box.innerHTML=names.map(n=>`<div onmousedown="event.preventDefault();crmMentionPick('${el.id}',this.dataset.n)" data-n="${esc(n)}" style="padding:5px 9px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--g100)">@${esc(n)}</div>`).join('');
+  box.style.display='block';
+}
+function crmMentionPick(elId,name){
+  const el=document.getElementById(elId);if(!el)return;
+  const v=el.value,pos=el.selectionStart,upto=v.slice(0,pos),m=upto.match(/@([^\s@]*)$/);if(!m)return;
+  const start=pos-m[0].length;
+  el.value=v.slice(0,start)+'@'+name+' '+v.slice(pos);
+  const box=document.getElementById(elId+'-mbox');if(box)box.style.display='none';
+  el.focus();
+}
+function crmExtractMentions(text){
+  const out=[];crmUserNames().forEach(n=>{if(String(text||'').indexOf('@'+n)>=0){const u=crmNameToUsername(n);if(u)out.push(u);}});
+  return Array.from(new Set(out));
+}
+function crmMyNotifs(){return currentUser?((CRM_NOTIFS[currentUser.username])||[]):[];}
+function crmRenderBell(){
+  const badge=document.getElementById('crmBellBadge');if(!badge)return;
+  const unread=crmMyNotifs().filter(n=>!n.read).length;
+  if(unread>0){badge.textContent=unread>9?'9+':unread;badge.style.display='flex';}
+  else badge.style.display='none';
+}
+function crmShowNotifs(){
+  const list=crmMyNotifs().slice().reverse();
+  const body=list.length?list.map(n=>`<div style="border:1px solid var(--g200);border-${lang==='ar'?'right':'left'}:3px solid ${n.read?'var(--g200)':'var(--primary)'};border-radius:6px;padding:8px 10px;margin-bottom:6px;background:${n.read?'#fff':'var(--primary-light)'}"><div style="font-size:13px">${esc(n.text)}</div><div style="font-size:10px;color:var(--g400);margin-top:3px">${esc(n.from)} · ${esc(n.at)}</div></div>`).join(''):`<div class="crm-empty">${LX('لا إشعارات','No notifications')}</div>`;
+  openModal(`<h3>🔔 ${LX('الإشعارات','Notifications')}</h3><div style="max-height:50vh;overflow:auto">${body}</div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn" style="flex:1" onclick="closeModal()">${LX('إغلاق','Close')}</button></div>`);
+  // mark all read
+  if(currentUser&&crmMyNotifs().some(n=>!n.read)){
+    mutateMapDoc('crm_notifications',m=>{const x=Object.assign({},m);x[currentUser.username]=(x[currentUser.username]||[]).map(n=>Object.assign({},n,{read:true}));return x;}).then(mm=>{CRM_NOTIFS=mm;crmRenderBell();}).catch(e=>console.error(e));
+  }
 }
 function crmSaveService(kind,arr){
   CRM_SVC[kind]=arr;
@@ -3659,7 +3721,7 @@ function crmNavDefs(){
   const d=[];
   if(can('view_dashboard'))d.push({key:'dash',label:LX('📊 داش بورد','📊 Dashboard')});
   if(can('view_crm'))d.push({key:'sales',label:LX('🛒 مبيعات','🛒 Sales'),subs:[['new',LX('جديد','New')],['renew',LX('تجديد','Renewal')],['customers',LX('كل العملاء','All Customers')],['followup',LX('المتابعة','Follow-up')]]});
-  if(can('manage_complaints')||can('manage_followups'))d.push({key:'service',label:LX('🎧 خدمة عملاء','🎧 Customer Service'),subs:[['free',LX('الحصص المجانية','Free Sessions')],['complaints',LX('الشكاوى','Complaints')],['suggestions',LX('الاقتراحات','Suggestions')],['desk',LX('مكتب الردود','Replies Desk')]]});
+  if(can('manage_complaints')||can('manage_followups'))d.push({key:'service',label:LX('🎧 خدمة عملاء','🎧 Customer Service'),subs:[['free',LX('الحصص المجانية','Free Sessions')],['complaints',LX('الشكاوى','Complaints')],['suggestions',LX('الاقتراحات','Suggestions')],['desk',LX('مكتب الردود','Replies Desk')],['waitlist',LX('قائمة الانتظار','Waiting List')]]});
   if(can('manage_complaints'))d.push({key:'settings',label:LX('⚙️ إعدادات','⚙️ Settings')});
   return d;
 }
@@ -3688,6 +3750,7 @@ function crmApplyPerms(){
 async function crmOnLogin(){
   await loadCrmData();
   crmApplyPerms();
+  crmRenderBell();
   if(crmState.mode==='crm'){crmBuildNav();crmRender();}
 }
 
@@ -3702,6 +3765,7 @@ function crmRender(){
   }else if(crmState.sec==='service'){
     if(crmState.sub==='free')b.innerHTML=crmFreeSessions();
     else if(crmState.sub==='desk')b.innerHTML=crmDesk();
+    else if(crmState.sub==='waitlist')b.innerHTML=crmWaitlist();
     else b.innerHTML=crmService(crmState.sub||'complaints');
   }else if(crmState.sec==='settings')b.innerHTML=crmSettings();
   else b.innerHTML='';
@@ -3821,7 +3885,7 @@ function crmDashboard(){
     const subv=(!hidden&&c.sub)?`<div style="font-size:11px;color:var(--g400)">${c.sub}</div>`:'';
     const active=crmState.drill===c.k?'border-color:var(--primary);border-width:2px':'';
     return `<div class="metric" style="cursor:pointer;position:relative;${active}" onclick="crmDrill('${c.k}')">
-      <button onclick="event.stopPropagation();crmToggleHide('${c.k}')" title="${LX('إظهار/إخفاء','Show/Hide')}" style="position:absolute;left:8px;top:8px;border:none;background:transparent;cursor:pointer;font-size:13px">${hidden?'🙈':'👁'}</button>
+      <button onclick="event.stopPropagation();crmToggleHide('${c.k}')" title="${LX('إظهار/إخفاء','Show/Hide')}" style="position:absolute;inset-inline-end:8px;top:8px;border:none;background:transparent;cursor:pointer;font-size:13px;line-height:1">${hidden?'🙈':'👁'}</button>
       <div class="ml">${c.ic} ${c.l}</div><div class="mv">${val}</div>${subv}
       ${crmState.drill===c.k?'<div style="position:absolute;bottom:-9px;right:50%;transform:translateX(50%);color:var(--primary)">▾</div>':''}</div>`;
   }).join('')+`</div>`;
@@ -3920,7 +3984,37 @@ function crmCustomerCard(c){
   }).join(''):`<div style="font-size:12px;color:var(--g400)">${LX('لا باقات','No packages')}</div>`;
   const refundTotal=real.reduce((s,t)=>s+(t.refunded?(t.refundAmount||0):0),0);
   const totalLine=`${LX('إجمالي','Total')} ${crmMoney(paid)}`+(refundTotal?` · <span style="color:#B91C1C">${LX('مُسترجع','Refunded')} ${crmMoney(refundTotal)}</span> · ${LX('صافي','Net')} ${crmMoney(paid-refundTotal)}`:'');
-  return `<div class="crm-card"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><div><span style="font-weight:800">${esc(c.name||'—')}</span> <span dir=ltr style="color:var(--g600);font-size:12px">${esc(c.phone)}</span><div style="font-size:11px;color:var(--g400);margin-top:2px">${cityLabel(c.city)}${c.zoneId!=null?' · '+LX('زون','Zone')+' '+c.zoneId:''} · <b style="color:var(--primary)">${real.length} ${LX('باقة','pkgs')}</b> · <b style="color:var(--primary)">${totalSess} ${LX('حصة','sess')}</b> (${usedSess} ${LX('مستخدمة','used')}) · ${totalLine}</div></div></div><div style="display:flex;flex-direction:column;gap:6px">${pkgs}</div></div>`;
+  const mgr=(typeof isSuperAdmin==='function'&&isSuperAdmin());
+  const mgrBtns=mgr?`<div style="display:flex;gap:4px;flex-shrink:0"><button class="btn" style="font-size:11px;padding:2px 7px" onclick="crmEditCustomerZone('${esc(c.phone)}')" title="${LX('تعيين المدينة/الزون','Set city/zone')}">📍</button><button class="btn btn-danger" style="font-size:11px;padding:2px 7px" onclick="crmDeleteCustomer('${esc(c.phone)}')" title="${LX('حذف العميل نهائياً','Delete customer')}">✕</button></div>`:'';
+  return `<div class="crm-card"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><div><span style="font-weight:800">${esc(c.name||'—')}</span> <span dir=ltr style="color:var(--g600);font-size:12px">${esc(c.phone)}</span><div style="font-size:11px;color:var(--g400);margin-top:2px">${cityLabel(c.city)}${c.zoneId!=null?' · '+LX('زون','Zone')+' '+c.zoneId:''} · <b style="color:var(--primary)">${real.length} ${LX('باقة','pkgs')}</b> · <b style="color:var(--primary)">${totalSess} ${LX('حصة','sess')}</b> (${usedSess} ${LX('مستخدمة','used')}) · ${totalLine}</div></div>${mgrBtns}</div><div style="display:flex;flex-direction:column;gap:6px">${pkgs}</div></div>`;
+}
+function crmDeleteCustomer(phone){
+  if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Manager only'));return;}
+  const c=CUSTOMERS.find(x=>x.phone===phone);if(!c)return;
+  if(!confirm(LX('حذف العميل ','Delete customer ')+(c.name||phone)+LX(' وكل بياناته نهائياً؟','and all their data?')))return;
+  mutateListDoc('customers',cur=>cur.filter(x=>x.phone!==phone)).then(n=>{CUSTOMERS=n;toast('🗑 '+LX('حُذف العميل','Customer deleted'));try{logHistory(LX('حذف عميل','Delete customer'),phone,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
+function crmEditCustomerZone(phone){
+  if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Manager only'));return;}
+  const c=CUSTOMERS.find(x=>x.phone===phone);if(!c)return;
+  const cityOpts=['<option value="">— '+LX('اختر مدينة','Pick city')+' —</option>'].concat((CITIES||[]).map(ct=>`<option value="${ct.id}" ${ct.id===c.city?'selected':''}>${lang==='ar'?ct.ar:ct.en}</option>`)).join('');
+  openModal(`<h3>📍 ${LX('تعيين المدينة/الزون','Set city/zone')} — ${esc(c.name||phone)}</h3>
+    <label class="form-label">${LX('المدينة','City')}</label><select id="cz-city" onchange="crmCzZones(this.value)">${cityOpts}</select>
+    <label class="form-label">${LX('الزون','Zone')}</label><select id="cz-zone"></select>
+    <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-primary" style="flex:1" onclick="crmEditCustomerZoneSave('${esc(phone)}')">💾 ${LX('حفظ','Save')}</button><button class="btn" style="flex:1" onclick="closeModal()">${LX('إلغاء','Cancel')}</button></div>`);
+  crmCzZones(c.city||'',c.zoneId);
+}
+function crmCzZones(cityId,sel){
+  const z=document.getElementById('cz-zone');if(!z)return;
+  const zs=(ZONES||[]).filter(zo=>(zo.cityId||'riyadh')===cityId);
+  z.innerHTML='<option value="">— '+LX('بدون زون','No zone')+' —</option>'+zs.map(zo=>`<option value="${zo.id}" ${sel!=null&&zo.id===sel?'selected':''}>${LX('زون','Zone')} ${zo.id}</option>`).join('');
+}
+function crmEditCustomerZoneSave(phone){
+  if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Manager only'));return;}
+  const city=document.getElementById('cz-city').value||null;
+  const zv=document.getElementById('cz-zone').value;const zoneId=zv===''?null:(parseInt(zv,10));
+  const ct=(CITIES||[]).find(x=>x.id===city);
+  mutateListDoc('customers',cur=>cur.map(x=>x.phone!==phone?x:Object.assign({},x,{city,cityName:ct?(lang==='ar'?ct.ar:ct.en):'',zoneId}))).then(n=>{CUSTOMERS=n;closeModal();toast('💾 '+LX('تم','Saved'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmNormStatus(s){const st=CRM_CFG.complaintStatuses||['مفتوح','قيد المعالجة','محلول'];const map={open:0,in_progress:1,resolved:2};if(s in map)return st[Math.min(map[s],st.length-1)]||st[0];return s||st[0];}
 function crmStatusPill(s){const st=CRM_CFG.complaintStatuses||['مفتوح','قيد المعالجة','محلول'];const v=crmNormStatus(s);const i=st.indexOf(v);const cls=i>=st.length-1?'pill-green':(i<=0?'pill-red':'pill-amber');return `<span class="crm-pill ${cls}">${esc(v)}</span>`;}
@@ -3953,7 +4047,7 @@ function crmService(kind){
   const fmtDur=x=>{if(!crmIsResolved(x)||!x.resolvedAt||!x.id)return '—';const days=(x.resolvedAt-x.id)/86400000;return days<1?`${Math.round(days*24)} ${LX('ساعة','h')}`:`${days.toFixed(1)} ${LX('يوم','d')}`;};
   const resolvedDate=x=>x.resolvedAt?new Date(x.resolvedAt).toLocaleDateString('en-CA'):'—';
   const HD=isC?`<th>${LX('الأولوية','Priority')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('محوّلة إلى','Assigned To')}</th><th>${LX('رد المسؤول','Reply')}</th><th>${LX('أُنشئت','Created')}</th><th>${LX('حُلّت','Resolved')}</th><th>${LX('المدة','Duration')}</th>`:'';
-  return head+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${colT}</th>${HD}<th>${LX('الحالة','Status')}</th><th>${LX('رابط','Link')}</th><th></th></tr></thead><tbody>${arr.map(x=>{const canE=isC?crmCanEditComplaint(x):can('manage_complaints');return `<tr><td>${esc(x.customer||'—')}${x.phone?`<br><span dir=ltr style="font-size:10px;color:var(--g400)">${esc(x.phone)}</span>`:''}</td><td>${esc(x.subject||'')}${x.note?`<br><span style="font-size:11px;color:var(--g600)">${esc(x.note)}</span>`:''}</td>${isC?`<td>${crmPrioPill(x.priority)}</td><td>${esc(x.provider||'—')}</td><td>${esc(x.assignedTo||'—')}</td><td style="max-width:180px;font-size:11px;color:var(--g600)">${esc(x.response||'—')}</td><td style="white-space:nowrap;font-size:11px">${esc(x.at||'')}</td><td style="white-space:nowrap;font-size:11px">${resolvedDate(x)}</td><td style="white-space:nowrap;font-size:11px">${fmtDur(x)}</td>`:''}<td>${crmStatusPill(x.status)}</td><td>${x.link?`<a href="${esc(x.link)}" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700">🔗</a>`:'—'}</td><td style="white-space:nowrap">${canE?`<button class="btn" style="font-size:10px;padding:2px 6px" onclick="crmCycleStatus('${kind}',${x.id})" title="${LX('الحالة','Status')}">↻</button><button class="btn" style="font-size:10px;padding:2px 6px" onclick="crmServiceForm('${kind}',${x.id})" title="${LX('تعديل','Edit')}">✏️</button>`:'<span style="font-size:10px;color:var(--g400)">—</span>'}</td></tr>`;}).join('')}</tbody></table></div>`;
+  return head+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${colT}</th>${HD}<th>${LX('الحالة','Status')}</th><th>${LX('رابط','Link')}</th><th></th></tr></thead><tbody>${arr.map(x=>{const canE=isC?crmCanEditComplaint(x):can('manage_complaints');return `<tr><td>${esc(x.customer||'—')}${x.phone?`<br><span dir=ltr style="font-size:10px;color:var(--g400)">${esc(x.phone)}</span>`:''}</td><td>${esc(x.subject||'')}${x.note?`<br><span style="font-size:11px;color:var(--g600)">${esc(x.note)}</span>`:''}</td>${isC?`<td>${crmPrioPill(x.priority)}</td><td>${esc(x.provider||'—')}</td><td>${esc(x.assignedTo||'—')}</td><td style="max-width:180px;font-size:11px;color:var(--g600)">${esc(x.response||'—')}</td><td style="white-space:nowrap;font-size:11px">${esc(x.at||'')}</td><td style="white-space:nowrap;font-size:11px">${resolvedDate(x)}</td><td style="white-space:nowrap;font-size:11px">${fmtDur(x)}</td>`:''}<td>${(isC&&canE)?`<select onchange="crmSetSvcStatus('${kind}',${x.id},this.value)" style="font-size:11px;padding:2px 4px;width:auto">${(CRM_CFG.complaintStatuses||[]).map(s=>`<option ${crmNormStatus(x.status)===s?'selected':''}>${esc(s)}</option>`).join('')}</select>`:crmStatusPill(x.status)}</td><td>${x.link?`<a href="${esc(x.link)}" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700">🔗</a>`:'—'}</td><td style="white-space:nowrap">${canE?`${isC?'':`<button class="btn" style="font-size:10px;padding:2px 6px" onclick="crmCycleStatus('${kind}',${x.id})" title="${LX('الحالة','Status')}">↻</button>`}<button class="btn" style="font-size:10px;padding:2px 6px" onclick="crmServiceForm('${kind}',${x.id})" title="${LX('تعديل','Edit')}">✏️</button>`:'<span style="font-size:10px;color:var(--g400)">—</span>'}</td></tr>`;}).join('')}</tbody></table></div>`;
 }
 function crmServiceForm(kind,id){
   if(!can('manage_complaints')){toast(LX('لا صلاحية','No permission'));return;}
@@ -3968,10 +4062,10 @@ function crmServiceForm(kind,id){
     <label class="form-label">${LX('اسم العميل','Customer name')}</label><input id="svc-cust" value="${esc(ex.customer||'')}"/>
     <label class="form-label">${LX('رقم الجوال','Mobile')}</label><input id="svc-phone" dir="ltr" value="${esc(ex.phone||'')}"/>
     <label class="form-label">${isC?LX('نص الشكوى','Complaint text'):LX('نص الاقتراح','Suggestion text')}</label><input id="svc-subject" value="${esc(ex.subject||'')}"/>
-    <label class="form-label">${LX('ملاحظة','Note')}</label><textarea id="svc-note" rows="2">${esc(ex.note||'')}</textarea>
+    <label class="form-label">${LX('ملاحظة (اكتب @ لإشعار موظف)','Note (type @ to notify a user)')}</label><textarea id="svc-note" rows="2" oninput="crmMentionInput(this)">${esc(ex.note||'')}</textarea><div id="svc-note-mbox" style="display:none;background:#fff;border:1px solid var(--g200);border-radius:6px;box-shadow:var(--sh);margin-bottom:6px"></div>
     ${isC?`<label class="form-label">${LX('مقدم الخدمة (اختياري)','Provider (optional)')}</label><select id="svc-provider"><option value=""></option>${coachOpts}</select>
     <label class="form-label">${LX('محوّلة إلى (المسؤول)','Assigned to')}</label><select id="svc-assigned">${respOpts}</select>
-    <label class="form-label">${LX('رد المسؤول','Reply')}</label><textarea id="svc-response" rows="2">${esc(ex.response||'')}</textarea>
+    <label class="form-label">${LX('رد المسؤول (اكتب @ لإشعار موظف)','Reply (type @ to notify)')}</label><textarea id="svc-response" rows="2" oninput="crmMentionInput(this)">${esc(ex.response||'')}</textarea><div id="svc-response-mbox" style="display:none;background:#fff;border:1px solid var(--g200);border-radius:6px;box-shadow:var(--sh);margin-bottom:6px"></div>
     <label class="form-label">${LX('الأولوية','Priority')}</label><select id="svc-prio">${prioOpts}</select>`:''}
     <label class="form-label">${LX('رابط (للرجوع للمصدر — محادثة/تذكرة/تسجيل)','Link (back to source — chat/ticket/recording)')}</label><input id="svc-link" dir="ltr" placeholder="https://..." value="${esc(ex.link||'')}"/>
     <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-primary" style="flex:1" onclick="crmServiceSave('${kind}',${id||'null'})">💾 ${LX('حفظ','Save')}</button><button class="btn" style="flex:1" onclick="closeModal()">${LX('إلغاء','Cancel')}</button></div>`);
@@ -3986,6 +4080,13 @@ function crmServiceSave(kind,id){
     arr=arr.map(x=>x.id===id?Object.assign({},x,rec):x);
   } else{arr.push(Object.assign({id:Date.now(),status:(CRM_CFG.complaintStatuses||['مفتوح'])[0],byUser:currentUser?currentUser.username:'',by:currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'',at:new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'})},rec));}
   closeModal();crmSaveService(kind,arr);
+  // notifications: assignee + @mentions
+  if(kind==='complaints'){
+    const notified={};
+    const au=crmNameToUsername(rec.assignedTo);
+    if(au&&au!==(currentUser&&currentUser.username)){crmNotify(au,LX('حُوِّلت لك شكوى: ','A complaint was assigned to you: ')+rec.subject,'service','complaints');notified[au]=1;}
+    crmExtractMentions((rec.note||'')+' '+(rec.response||'')).forEach(u=>{if(u!==(currentUser&&currentUser.username)&&!notified[u]){crmNotify(u,LX('أُشير إليك في شكوى: ','You were mentioned in a complaint: ')+rec.subject,'service','complaints');notified[u]=1;}});
+  }
 }
 function crmCycleStatus(kind,id){
   const st=CRM_CFG.complaintStatuses||['مفتوح','قيد المعالجة','محلول'];
@@ -3996,6 +4097,16 @@ function crmCycleStatus(kind,id){
     const next=st[(i+1)%st.length];
     const upd={status:next};
     if(next===st[st.length-1])upd.resolvedAt=Date.now();else upd.resolvedAt=0;
+    return Object.assign({},x,upd);
+  }));
+}
+function crmSetSvcStatus(kind,id,status){
+  const st=CRM_CFG.complaintStatuses||[];
+  crmSaveService(kind,(CRM_SVC[kind]||[]).map(x=>{
+    if(x.id!==id)return x;
+    if(kind==='complaints'&&!crmCanEditComplaint(x)){toast(LX('لا صلاحية','No permission'));return x;}
+    const upd={status};
+    if(status===st[st.length-1])upd.resolvedAt=x.resolvedAt||Date.now();else upd.resolvedAt=0;
     return Object.assign({},x,upd);
   }));
 }
@@ -4098,12 +4209,17 @@ function importFreeSessions(rows){
   if(F.sid<0||F.mob<0){toast(LX('❌ الملف لا يطابق تنسيق الحصص (Session ID / Customer Mobile مفقود)','❌ File does not match sessions format (Session ID / Customer Mobile missing)'));return;}
   const data=rows.slice(1).filter(r=>r[F.mob]&&String(r[F.mob]).trim());
   if(!data.length){toast(LX('❌ لا توجد صفوف','❌ No rows'));return;}
-  const parsed=data.map(r=>{const g=crmGeocode(r[F.addr]||'');return {sessionId:String(r[F.sid]).trim(),phone:String(r[F.mob]).trim(),name:r[F.name]||'',email:r[F.email]||'',address:r[F.addr]||'',city:g.city||null,cityName:g.cityName||'',zoneId:(g.zoneId==null?null:g.zoneId),package:r[F.pkg]||'',expiry:String(r[F.exp]||'').slice(0,10),trainer:r[F.trainer]||'',scheduledDate:r[F.sched]||'',createdDate:r[F.cdate]||'',status:String(r[F.st]||'scheduled').toLowerCase(),notSubReason:'',calledBy:'',followNote:''};});
+  const mapStatus=s=>{s=String(s||'').toLowerCase();if(/cancel|ملغ|الغاء|الغ/.test(s))return 'cancelled';if(/complet|confirm|done|attended|مكتمل|مؤكد|تم/.test(s))return 'confirmed';return 'scheduled';};
+  const parsed=data.map(r=>{const g=crmGeocode(r[F.addr]||'');return {sessionId:String(r[F.sid]).trim(),phone:String(r[F.mob]).trim(),name:r[F.name]||'',email:r[F.email]||'',address:r[F.addr]||'',city:g.city||null,cityName:g.cityName||'',zoneId:(g.zoneId==null?null:g.zoneId),package:r[F.pkg]||'',expiry:String(r[F.exp]||'').slice(0,10),trainer:r[F.trainer]||'',scheduledDate:r[F.sched]||'',createdDate:r[F.cdate]||'',status:mapStatus(r[F.st]),notSubReason:'',calledBy:'',followNote:''};});
   let before=0;
   mutateListDoc('free_sessions',current=>{
     before=current.length;
     const map={};current.forEach(f=>map[f.sessionId]=f);
-    parsed.forEach(p=>{ if(map[p.sessionId]){const o=map[p.sessionId];map[p.sessionId]=Object.assign({},p,{status:o.status,notSubReason:o.notSubReason,calledBy:o.calledBy,followNote:o.followNote});} else map[p.sessionId]=p; });
+    parsed.forEach(p=>{ if(map[p.sessionId]){const o=map[p.sessionId];
+      // file status wins when it's definitive (confirmed/cancelled); else keep manual status. Keep manual follow-up data.
+      const status=(p.status==='confirmed'||p.status==='cancelled')?p.status:(o.status||p.status);
+      map[p.sessionId]=Object.assign({},p,{status,notSubReason:o.notSubReason||'',calledBy:o.calledBy||'',followNote:o.followNote||'',followLog:o.followLog||[],followDate:o.followDate||'',bookedBy:o.bookedBy||''});
+    } else map[p.sessionId]=p; });
     return Object.values(map);
   }).then(next=>{
     FREE_SESSIONS=next;
@@ -4261,6 +4377,51 @@ function crmRenewFollowSave(phone,inv){
     if(c.phone!==phone)return c;
     return Object.assign({},c,{txns:(c.txns||[]).map(t=>t.inv!==inv?t:Object.assign({},t,{renewLog:(t.renewLog||[]).concat(entry),renewReason:reason||t.renewReason||'',renewNote:note}))});
   })).then(n=>{CUSTOMERS=n;closeModal();toast(LX('💾 تمت إضافة المتابعة','💾 Follow-up added'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
+// ---------- قائمة الانتظار (تحت خدمة العملاء) ----------
+function crmWaitlist(){
+  const cityNames=(CITIES||[]).map(c=>lang==='ar'?c.ar:c.en);
+  const dl=`<datalist id="wl-cities">${cityNames.map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist>`;
+  const form=can('manage_complaints')?`<div class="crm-card"><h3>➕ ${LX('إضافة لقائمة الانتظار','Add to waiting list')}</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">
+      <div><label class="form-label">${LX('اسم العميل','Customer name')}</label><input id="wl-name"/></div>
+      <div><label class="form-label">${LX('الجوال (اختياري)','Mobile (optional)')}</label><input id="wl-phone" dir="ltr"/></div>
+      <div><label class="form-label">${LX('المدينة','City')}</label><input id="wl-city" list="wl-cities" oninput="crmWlCityChange(this.value)" placeholder="${LX('اختر أو اكتب مدينة','pick or type a city')}"/>${dl}</div>
+      <div id="wl-zonewrap" style="display:none"><label class="form-label">${LX('الزون','Zone')}</label><select id="wl-zone"></select></div>
+    </div>
+    <button class="btn btn-primary" style="margin-top:10px" onclick="crmWaitAdd()">➕ ${LX('إضافة','Add')}</button></div>`:'';
+  const byCity={},byZone={};
+  WAITLIST.forEach(w=>{const cn=w.cityName||w.city||'—';byCity[cn]=(byCity[cn]||0)+1;if(w.zoneId!=null)byZone[w.zoneId]=(byZone[w.zoneId]||0)+1;});
+  const topCity=Object.entries(byCity).sort((a,b)=>b[1]-a[1]);
+  const topZone=Object.entries(byZone).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const stats=`<div class="metric-grid"><div class="metric"><div class="ml">👥 ${LX('إجمالي قائمة الانتظار','Total waiting')}</div><div class="mv">${WAITLIST.length}</div></div><div class="metric"><div class="ml">🏙 ${LX('عدد المدن','Cities')}</div><div class="mv">${topCity.length}</div></div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="crm-card"><h3>🏙 ${LX('المدن الأكثر طلباً','Most-requested cities')}</h3>${topCity.length?topCity.map(([c,n])=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid var(--g100)"><span>${esc(c)}</span><span style="font-weight:700">${n}</span></div>`).join(''):'<div class="crm-empty">—</div>'}</div>
+    <div class="crm-card"><h3>🔵 ${LX('أكثر زون عليه طلب','Top zone demand')}</h3>${topZone.length?topZone.map(([z,n])=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid var(--g100)"><span>${LX('زون','Zone')} ${z}</span><span style="font-weight:700">${n}</span></div>`).join(''):'<div class="crm-empty">—</div>'}</div></div>`;
+  const rows=WAITLIST.slice().sort((a,b)=>b.id-a.id);
+  const list=rows.length?`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('أُضيف','Added')}</th><th></th></tr></thead><tbody>${rows.map(w=>`<tr><td>${esc(w.name)}</td><td dir=ltr>${esc(w.phone||'—')}</td><td>${esc(w.cityName||w.city||'—')}</td><td>${w.zoneId!=null?LX('زون','Zone')+' '+w.zoneId:'—'}</td><td style="white-space:nowrap;font-size:11px">${esc(w.at||'')}</td><td>${can('manage_complaints')?`<button class="btn btn-danger" style="font-size:10px;padding:2px 7px" onclick="crmWaitDel(${w.id})">✕</button>`:''}</td></tr>`).join('')}</tbody></table></div>`:`<div class="crm-empty">${LX('قائمة الانتظار فارغة','Waiting list is empty')}</div>`;
+  return `<div style="font-size:11px;color:var(--g400);margin-bottom:10px">${LX('سجّل العملاء المنتظرين لمعرفة المدن/الزونات الأكثر طلباً. المدن المعروفة تظهر لها الزونات؛ غيرها بالمدينة فقط.','Log waiting customers to see most-requested cities/zones. Known cities show zones; others = city only.')}</div>${form}${stats}${list}`;
+}
+function crmWlCityChange(v){
+  const wrap=document.getElementById('wl-zonewrap'),zsel=document.getElementById('wl-zone');if(!wrap||!zsel)return;
+  const ct=(CITIES||[]).find(c=>c.ar===v||c.en===v);
+  if(ct){const zs=(ZONES||[]).filter(z=>(z.cityId||'riyadh')===ct.id);zsel.innerHTML='<option value="">— '+LX('بدون زون','No zone')+' —</option>'+zs.map(z=>`<option value="${z.id}">${LX('زون','Zone')} ${z.id}</option>`).join('');wrap.style.display='';}
+  else{wrap.style.display='none';zsel.innerHTML='';}
+}
+function crmWaitAdd(){
+  if(!can('manage_complaints')){toast(LX('لا صلاحية','No permission'));return;}
+  const name=(document.getElementById('wl-name').value||'').trim();if(!name){toast(LX('اكتب اسم العميل','Enter customer name'));return;}
+  const phone=(document.getElementById('wl-phone').value||'').trim();
+  const cityRaw=(document.getElementById('wl-city').value||'').trim();
+  const ct=(CITIES||[]).find(c=>c.ar===cityRaw||c.en===cityRaw);
+  const zsel=document.getElementById('wl-zone');const zv=ct&&zsel?zsel.value:'';
+  const rec={id:Date.now(),name,phone,city:ct?ct.id:null,cityName:ct?(lang==='ar'?ct.ar:ct.en):cityRaw,zoneId:(ct&&zv!=='')?parseInt(zv,10):null,by:currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'',at:new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'})};
+  mutateListDoc('crm_waitlist',cur=>cur.concat(rec)).then(n=>{WAITLIST=n;toast('✅ '+LX('أُضيف','Added'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
+function crmWaitDel(id){
+  if(!can('manage_complaints'))return;
+  if(!confirm(LX('حذف من قائمة الانتظار؟','Remove from waiting list?')))return;
+  mutateListDoc('crm_waitlist',cur=>cur.filter(w=>w.id!==id)).then(n=>{WAITLIST=n;crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 // ---------- إعدادات الـ CRM ----------
 function crmSettings(){
