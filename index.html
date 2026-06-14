@@ -3500,7 +3500,7 @@ let CRM_CFG={
   complaintPriorities:['عادية','عالية','عاجلة'],
   responsibles:[]
 };
-let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest'};
+let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:''};
 let crmHidden={};      // per-metric privacy hide state
 let crmPrivacyAll=false;
 
@@ -3824,7 +3824,7 @@ function crmUploadBar(){
 function crmFmtExpiry(e){
   const dl=crmDaysLeft(e);if(dl===null)return esc(e||'—');
   const cls=dl<0?'pill-red':dl<=7?'pill-amber':'pill-green';
-  const txt=dl<0?LX('منتهٍ','Expired'):dl<=14?(lang==='ar'?`${dl} يوم`:`${dl}d`):LX('فعّال','Active');
+  const txt=dl<0?LX('انتهى','Expired'):dl<=14?(lang==='ar'?`${dl} يوم`:`${dl}d`):LX('فعّال','Active');
   return `${esc(e)} <span class="crm-pill ${cls}">${txt}</span>`;
 }
 // ---------- period helpers ----------
@@ -3974,7 +3974,7 @@ function crmSalesList(type){
   const up=crmUploadBar();
   const bar=`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px">${sortSel}</div><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px">⬇️ ${LX('تصدير Excel','Export Excel')}</button></div>`;
   if(!rows.length)return up+`<div class="crm-empty">${LX('لا توجد عمليات '+(type==='New'?'جديدة':'تجديد')+' — ارفع ملف المبيعات','No '+(type==='New'?'new':'renewal')+' operations — upload the sales file')}</div>`;
-  return up+bar+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('الباقة','Package')}</th><th>${LX('الحصص','Sessions')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('المدفوع','Paid')}</th><th>${LX('ينتهي','Expires')}</th></tr></thead><tbody>${rows.map(t=>`<tr><td>${esc(t.name)}</td><td dir=ltr>${esc(t.phone)}</td><td>${cityLabel(t.city)}</td><td>${t.zoneId!=null?'Z'+t.zoneId:'—'}</td><td>${esc(t.item||t.cat)}</td><td>${t.sessions||0}</td><td>${esc(t.trainer||'—')}</td><td>${crmMoney(t.paid)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td></tr>`).join('')}</tbody></table></div>`;
+  return up+bar+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('الباقة','Package')}</th><th>${LX('الحصص','Sessions')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('المدفوع','Paid')}</th><th>${LX('تاريخ الشراء','Purchase date')}</th><th>${LX('ينتهي','Expires')}</th></tr></thead><tbody>${rows.map(t=>`<tr><td>${esc(t.name)}</td><td dir=ltr>${esc(t.phone)}</td><td>${cityLabel(t.city)}</td><td>${t.zoneId!=null?'Z'+t.zoneId:'—'}</td><td>${esc(t.item||t.cat)}</td><td>${t.sessions||0}</td><td>${esc(t.trainer||'—')}</td><td>${crmMoney(t.paid)}</td><td style="white-space:nowrap">${esc(String(t.pdate||'').slice(0,10)||'—')}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td></tr>`).join('')}</tbody></table></div>`;
 }
 function crmCustomers(){
   const head=`<div style="display:flex;gap:8px;margin-bottom:12px"><input type="text" id="crmCustSearch" placeholder="🔍 ${LX('ابحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" oninput="crmFilterCust(this.value)" value="${esc(window._crmSearch||'')}" style="flex:1"><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px;white-space:nowrap">⬇️ Excel</button></div><div id="crmCustList">${crmCustListHtml()}</div>`;
@@ -4188,6 +4188,19 @@ function crmExpMatch(t){
 function crmSetExpF(f){crmState.expF=f;crmRender();}
 function crmSetExpDate(d){crmState.expDate=d;crmState.expF='date';crmRender();}
 function crmSetSalesSort(s){crmState.salesSort=s;crmRender();}
+function crmSetFollowFreeF(f){crmState.followFreeF=f;crmRender();}
+function crmSetFollowFreeDate(d){crmState.followFreeDate=d;crmState.followFreeF='date';crmRender();}
+function crmFreeFollowDateMatch(f){
+  const ff=crmState.followFreeF||'';if(ff==='all'||ff==='')return true;
+  const day=crmFreeDay(f);if(!day)return false;
+  if(ff==='date')return crmState.followFreeDate?day===crmState.followFreeDate:true;
+  const today=crmYMD(new Date());
+  if(ff==='today')return day===today;
+  if(ff==='4d')return day>=crmDayStr(-4)&&day<=today;
+  if(ff==='week')return day>=crmDayStr(-7)&&day<=today;
+  if(ff==='month'){const n=new Date();return day>=crmYMD(new Date(n.getFullYear(),n.getMonth(),1))&&day<=today;}
+  return true;
+}
 function crmFollowup(){
   const exp=[];CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{if(crmExpMatch(t))exp.push({c,t,dl:crmDaysLeft(crmEnd(t))});}));
   exp.sort((a,b)=>a.dl-b.dl);
@@ -4214,8 +4227,11 @@ function crmFollowup(){
   html+=exp.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('الاشتراك','Subscription')}</th><th>${LX('ينتهي','Expires')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('سبب عدم التجديد','No-renew reason')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr></thead><tbody>${exp.map(e=>{const log=e.t.renewLog||[];const last=log[log.length-1];return `<tr><td>${esc(e.c.name)}</td><td dir=ltr>${esc(e.c.phone)}</td><td>${esc(e.t.cat||e.t.item)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(e.t))}</td><td>${esc(e.t.trainer||'—')}</td><td>${esc(e.t.renewReason||'—')}</td><td style="font-size:11px">${last?`${esc(last.note||'')}<br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}</span>`:'—'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmRenewFollowForm('${esc(e.c.phone)}','${esc(e.t.inv)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد ضمن هذا الفلتر','None in this filter')}</div>`;
   const dueToday=pending.filter(crmFollowDue).length;
   html+=`</div><div class="crm-card"><h3>👀 ${LX('جرّبوا حصة مجانية ولم يشتركوا (للمتابعة)','Took a free session but didn’t subscribe')}${dueToday?` <span class="crm-pill pill-red">${dueToday} ${LX('يحتاج متابعة اليوم','due today')}</span>`:''}</h3>`;
-  const psort=pending.slice().sort((a,b)=>(crmFollowDue(b)?1:0)-(crmFollowDue(a)?1:0));
-  html+=pending.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الحصة','Session')}</th><th>${LX('متابعة بتاريخ','Follow on')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr></thead><tbody>${psort.map(f=>{const due=crmFollowDue(f);const log=f.followLog||[];const last=log[log.length-1];return `<tr style="${due?'background:#FEF2F2':''}"><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}</td><td>${cityLabel(f.city)}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').slice(0,10))}</td><td style="white-space:nowrap">${f.followDate?`${esc(String(f.followDate).slice(0,10))} ${due?'<span class="crm-pill pill-red">'+LX('اليوم','today')+'</span>':''}`:'—'}</td><td style="max-width:220px">${last?`<span style="font-size:11px">${esc(last.note||last.reason||'')}</span><br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}${log.length>1?` · (${log.length} ${LX('متابعات','follow-ups')})`:''}</span>`:'<span style="color:var(--g400)">'+LX('لم تتم متابعة بعد','No follow-up yet')+'</span>'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد فري سشن معلّق — ارفع الحصص من «خدمة العملاء»','No pending free sessions — upload from “Customer Service”')}</div>`;
+  const FFF=[['',LX('الكل','All')],['today',LX('اليوم','Today')],['4d',LX('قبل ٤ أيام','Last 4 days')],['week',LX('قبل أسبوع','Last week')],['month',LX('من بداية الشهر','Since month start')],['date',LX('تاريخ محدد','Custom date')]];
+  html+=`<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:10px">${FFF.map(b=>`<button class="crm-subbtn ${(crmState.followFreeF||'')===b[0]?'on':''}" onclick="crmSetFollowFreeF('${b[0]}')">${b[1]}</button>`).join('')}<input type="date" value="${esc(crmState.followFreeDate||'')}" onchange="crmSetFollowFreeDate(this.value)" style="width:auto;font-size:11px;padding:3px 6px"></div>`;
+  const pf=pending.filter(crmFreeFollowDateMatch);
+  const psort=pf.slice().sort((a,b)=>(crmFollowDue(b)?1:0)-(crmFollowDue(a)?1:0));
+  html+=pf.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الحصة','Session')}</th><th>${LX('متابعة بتاريخ','Follow on')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr></thead><tbody>${psort.map(f=>{const due=crmFollowDue(f);const log=f.followLog||[];const last=log[log.length-1];return `<tr style="${due?'background:#FEF2F2':''}"><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}</td><td>${cityLabel(f.city)}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').slice(0,10))}</td><td style="white-space:nowrap">${f.followDate?`${esc(String(f.followDate).slice(0,10))} ${due?'<span class="crm-pill pill-red">'+LX('اليوم','today')+'</span>':''}`:'—'}</td><td style="max-width:220px">${last?`<span style="font-size:11px">${esc(last.note||last.reason||'')}</span><br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}${log.length>1?` · (${log.length} ${LX('متابعات','follow-ups')})`:''}</span>`:'<span style="color:var(--g400)">'+LX('لم تتم متابعة بعد','No follow-up yet')+'</span>'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد فري سشن معلّق — ارفع الحصص من «خدمة العملاء»','No pending free sessions — upload from “Customer Service”')}</div>`;
   html+=`</div>`;
   return html;
 }
