@@ -3500,7 +3500,7 @@ let CRM_CFG={
   complaintPriorities:['عادية','عالية','عاجلة'],
   responsibles:[]
 };
-let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false};
+let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest'};
 let crmHidden={};      // per-metric privacy hide state
 let crmPrivacyAll=false;
 
@@ -3770,7 +3770,7 @@ async function crmOnLogin(){
 // ---------- rendering ----------
 function crmRender(){
   const b=document.getElementById('crmBody');if(!b)return;
-  if(crmState.sec==='dash')b.innerHTML=crmDashboard();
+  if(crmState.sec==='dash')b.innerHTML=can('view_dashboard')?crmDashboard():`<div class="crm-empty">${LX('ليس لديك صلاحية عرض الداش بورد','You don’t have dashboard permission')}</div>`;
   else if(crmState.sec==='sales'){
     if(crmState.sub==='customers')b.innerHTML=crmCustomers();
     else if(crmState.sub==='followup')b.innerHTML=crmFollowup();
@@ -3959,9 +3959,20 @@ function crmDrillBody(k){
   return '<div class="crm-empty">—</div>';
 }
 function crmSalesList(type){
-  const rows=crmTxnsWithType().filter(t=>t._dtype===type).sort((a,b)=>String(b.pdate||'').localeCompare(String(a.pdate||'')));
+  let rows=crmTxnsWithType().filter(t=>t._dtype===type);
+  const sort=crmState.salesSort||'newest';
+  const cmp={
+    newest:(a,b)=>crmTxnDate(b)-crmTxnDate(a),
+    oldest:(a,b)=>crmTxnDate(a)-crmTxnDate(b),
+    provider:(a,b)=>String(a.trainer||'').localeCompare(String(b.trainer||'')),
+    package:(a,b)=>String(a.item||a.cat||'').localeCompare(String(b.item||b.cat||'')),
+    city:(a,b)=>String(cityLabel(a.city)).localeCompare(String(cityLabel(b.city)))
+  };
+  rows=rows.slice().sort(cmp[sort]||cmp.newest);
+  const SS=[['newest',LX('الأحدث','Newest')],['oldest',LX('الأقدم','Oldest')],['provider',LX('مقدم الخدمة','Provider')],['package',LX('الباقة','Package')],['city',LX('المدينة','City')]];
+  const sortSel=`<span style="font-size:11px;color:var(--g600)">${LX('ترتيب:','Sort:')}</span><select onchange="crmSetSalesSort(this.value)" style="font-size:11px;padding:3px 6px;width:auto">${SS.map(s=>`<option value="${s[0]}" ${sort===s[0]?'selected':''}>${s[1]}</option>`).join('')}</select>`;
   const up=crmUploadBar();
-  const bar=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;color:var(--g400)">${LX('يُحتسب «جديد/تجديد» تلقائياً من تاريخ ظهور رقم الجوال','New/Renewal is auto-computed from when the mobile number first appeared')}</span><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px">⬇️ ${LX('تصدير Excel','Export Excel')}</button></div>`;
+  const bar=`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px">${sortSel}</div><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px">⬇️ ${LX('تصدير Excel','Export Excel')}</button></div>`;
   if(!rows.length)return up+`<div class="crm-empty">${LX('لا توجد عمليات '+(type==='New'?'جديدة':'تجديد')+' — ارفع ملف المبيعات','No '+(type==='New'?'new':'renewal')+' operations — upload the sales file')}</div>`;
   return up+bar+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('الباقة','Package')}</th><th>${LX('الحصص','Sessions')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('المدفوع','Paid')}</th><th>${LX('ينتهي','Expires')}</th></tr></thead><tbody>${rows.map(t=>`<tr><td>${esc(t.name)}</td><td dir=ltr>${esc(t.phone)}</td><td>${cityLabel(t.city)}</td><td>${t.zoneId!=null?'Z'+t.zoneId:'—'}</td><td>${esc(t.item||t.cat)}</td><td>${t.sessions||0}</td><td>${esc(t.trainer||'—')}</td><td>${crmMoney(t.paid)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td></tr>`).join('')}</tbody></table></div>`;
 }
@@ -4176,6 +4187,7 @@ function crmExpMatch(t){
 }
 function crmSetExpF(f){crmState.expF=f;crmRender();}
 function crmSetExpDate(d){crmState.expDate=d;crmState.expF='date';crmRender();}
+function crmSetSalesSort(s){crmState.salesSort=s;crmRender();}
 function crmFollowup(){
   const exp=[];CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{if(crmExpMatch(t))exp.push({c,t,dl:crmDaysLeft(crmEnd(t))});}));
   exp.sort((a,b)=>a.dl-b.dl);
