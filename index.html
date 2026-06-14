@@ -3500,7 +3500,7 @@ let CRM_CFG={
   complaintPriorities:['عادية','عالية','عاجلة'],
   responsibles:[]
 };
-let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:''};
+let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all'};
 let crmHidden={};      // per-metric privacy hide state
 let crmPrivacyAll=false;
 
@@ -3959,7 +3959,7 @@ function crmDrillBody(k){
   return '<div class="crm-empty">—</div>';
 }
 function crmSalesList(type){
-  let rows=crmTxnsWithType().filter(t=>t._dtype===type);
+  let rows=crmTxnsWithType().filter(t=>t._dtype===type&&crmSalesPeriodMatch(t)&&crmSalesSearchMatch(t));
   const sort=crmState.salesSort||'newest';
   const endMs=t=>{const d=new Date(String(crmEnd(t)).slice(0,10)+'T00:00:00');return isNaN(d)?0:d.getTime();};
   const cmp={
@@ -3973,8 +3973,13 @@ function crmSalesList(type){
   const SS=[['newest',LX('النهاية: الأحدث','End: Newest')],['oldest',LX('النهاية: الأقدم','End: Oldest')],['provider',LX('مقدم الخدمة','Provider')],['package',LX('الباقة','Package')],['city',LX('المدينة','City')]];
   const sortSel=`<span style="font-size:11px;color:var(--g600)">${LX('ترتيب:','Sort:')}</span><select onchange="crmSetSalesSort(this.value)" style="font-size:11px;padding:3px 6px;width:auto">${SS.map(s=>`<option value="${s[0]}" ${sort===s[0]?'selected':''}>${s[1]}</option>`).join('')}</select>`;
   const up=crmUploadBar();
-  const bar=`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px">${sortSel}</div><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px">⬇️ ${LX('تصدير Excel','Export Excel')}</button></div>`;
-  if(!rows.length)return up+`<div class="crm-empty">${LX('لا توجد عمليات '+(type==='New'?'جديدة':'تجديد')+' — ارفع ملف المبيعات','No '+(type==='New'?'new':'renewal')+' operations — upload the sales file')}</div>`;
+  const SP=[['today',LX('اليوم','Today')],['month',LX('هذا الشهر','This month')],['year',LX('هذه السنة','This year')],['all',LX('الكل','All')]];
+  const spBtns=SP.map(p=>`<button class="crm-subbtn ${(crmState.salesPeriod||'all')===p[0]?'on':''}" onclick="crmSetSalesPeriod('${p[0]}')">${p[1]}</button>`).join('');
+  const cntLabel=type==='New'?LX('عملاء جدد','New'):LX('تجديدات','Renewals');
+  const searchRow=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><input type="text" id="salesSearch" placeholder="🔍 ${LX('بحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" value="${esc(crmState.salesSearch||'')}" oninput="crmSetSalesSearch(this.value)" style="flex:1;min-width:160px"><span class="crm-pill pill-blue" style="font-size:12px;padding:4px 10px">${cntLabel}: ${rows.length}</span></div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--g600)">${LX('الفترة:','Period:')}</span>${spBtns}</div>`;
+  const bar=searchRow+`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px">${sortSel}</div><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px">⬇️ ${LX('تصدير Excel','Export Excel')}</button></div>`;
+  if(!rows.length)return up+bar+`<div class="crm-empty">${LX('لا توجد نتائج ضمن الفلتر/البحث','No results for this filter/search')}</div>`;
   return up+bar+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('الباقة','Package')}</th><th>${LX('الحصص','Sessions')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('المدفوع','Paid')}</th><th>${LX('تاريخ الشراء','Purchase date')}</th><th>${LX('ينتهي','Expires')}</th></tr></thead><tbody>${rows.slice(0,300).map(t=>`<tr><td>${esc(t.name)}</td><td dir=ltr>${esc(t.phone)}</td><td>${cityLabel(t.city)}</td><td>${t.zoneId!=null?'Z'+t.zoneId:'—'}</td><td>${esc(t.item||t.cat)}</td><td>${t.sessions||0}</td><td>${esc(t.trainer||'—')}</td><td>${crmMoney(t.paid)}</td><td style="white-space:nowrap">${esc(String(t.pdate||'').slice(0,10)||'—')}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td></tr>`).join('')}</tbody></table>${rows.length>300?`<div class="crm-empty">${LX('عرض ٣٠٠ من','Showing 300 of')} ${rows.length} — ${LX('استخدم الترتيب/التصدير','use sort/export')}</div>`:''}</div>`;
 }
 function crmCustomers(){
@@ -4189,6 +4194,17 @@ function crmExpMatch(t){
 function crmSetExpF(f){crmState.expF=f;crmRender();}
 function crmSetExpDate(d){crmState.expDate=d;crmState.expF='date';crmRender();}
 function crmSetSalesSort(s){crmState.salesSort=s;crmRender();}
+function crmSetSalesPeriod(p){crmState.salesPeriod=p;crmRender();}
+function crmSetSalesSearch(v){crmState.salesSearch=v;crmRender();var el=document.getElementById('salesSearch');if(el){el.focus();try{el.setSelectionRange(el.value.length,el.value.length);}catch(e){}}}
+function crmSalesSearchMatch(t){const q=String(crmState.salesSearch||'').trim();if(!q)return true;return String(t.name||'').indexOf(q)>=0||String(t.phone||'').indexOf(q)>=0;}
+function crmSalesPeriodMatch(t){
+  const p=crmState.salesPeriod||'all';if(p==='all')return true;
+  const ms=crmTxnDate(t);if(ms<=0)return false;const d=new Date(ms),now=new Date();
+  if(p==='today')return crmYMD(d)===crmYMD(now);
+  if(p==='month')return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth();
+  if(p==='year')return d.getFullYear()===now.getFullYear();
+  return true;
+}
 function crmSetFollowFreeF(f){crmState.followFreeF=f;crmRender();}
 function crmSetFollowFreeDate(d){crmState.followFreeDate=d;crmState.followFreeF='date';crmRender();}
 function crmFreeFollowDateMatch(f){
