@@ -3681,12 +3681,13 @@ function importSales(rows){
   const data=rows.slice(1).filter(r=>r[F.mob]&&String(r[F.mob]).trim());
   if(!data.length){toast(LX('❌ لا توجد صفوف بيانات','❌ No data rows'));return;}
   // pre-parse rows grouped by phone
+  const batchId='b'+Date.now();
   const parsed={}; let geoZone=0;
   data.forEach(r=>{
     const phone=String(r[F.mob]).trim();
     const g=crmGeocode(r[F.addr]||'');
     if(g.zoneId!=null)geoZone++;
-    const txn={inv:String(r[F.inv]).trim(),cat:r[F.cat]||'',item:r[F.item]||'',expiry:String(r[F.exp]||'').slice(0,10),pdate:r[F.pdate]||'',trainer:r[F.trainer]||'',paid:parseFloat(r[F.paid])||0,disc:parseFloat(r[F.disc])||0,coupon:r[F.coup]||'',status:r[F.st]||'',type:r[F.type]||'',prev:r[F.prev]||'',sessions:parseInt(r[F.sess])||0,used:parseInt(r[F.used])||0,remaining:parseInt(r[F.rem])||0,address:r[F.addr]||'',city:g.city||null,cityName:g.cityName||'',zoneId:(g.zoneId==null?null:g.zoneId),geoSrc:g.src};
+    const txn={inv:String(r[F.inv]).trim(),cat:r[F.cat]||'',item:r[F.item]||'',expiry:String(r[F.exp]||'').slice(0,10),pdate:r[F.pdate]||'',trainer:r[F.trainer]||'',paid:parseFloat(r[F.paid])||0,disc:parseFloat(r[F.disc])||0,coupon:r[F.coup]||'',status:r[F.st]||'',type:r[F.type]||'',prev:r[F.prev]||'',sessions:parseInt(r[F.sess])||0,used:parseInt(r[F.used])||0,remaining:parseInt(r[F.rem])||0,address:r[F.addr]||'',city:g.city||null,cityName:g.cityName||'',zoneId:(g.zoneId==null?null:g.zoneId),geoSrc:g.src,_batch:batchId};
     if(!parsed[phone])parsed[phone]={phone,name:r[F.name]||'',email:r[F.email]||'',txns:[]};
     parsed[phone].txns.push(txn);
   });
@@ -3717,7 +3718,7 @@ function importSales(rows){
     const skipped=Math.max(0,(rows.length-1)-data.length);
     toast(LX(`✅ ${added} عملية جديدة · ${dupe} مكرّرة · ${geoZone} بزون · العملاء: ${next.length}`,`✅ ${added} new · ${dupe} dup · ${geoZone} zoned · customers: ${next.length}`));
     try{logHistory(LX('رفع مبيعات','Upload sales'),LX(`${added} عملية، ${dupe} مكررة، ${geoZone} حُدّد زونها، إجمالي العملاء ${next.length}`,`${added} ops, ${dupe} dup, ${geoZone} zoned, total ${next.length}`),'import');}catch(e){}
-    crmLogUpload('sales',{total:data.length,added,dupe,skipped,note:''});
+    crmLogUpload('sales',{total:data.length,added,dupe,skipped,note:'',batch:batchId});
     if(crmState.mode!=='crm')switchMode('crm');
     crmRender();
   }).catch(e=>{console.error('importSales',e);toast(LX('❌ فشل الحفظ: ','❌ Save failed: ')+e.message);});
@@ -3808,21 +3809,23 @@ function crmExportCurrent(){
   let rows=[],fn='crm.xlsx';const sec=crmState.sec,sub=crmState.sub;
   if(sec==='sales'&&sub==='customers'){
     rows=[[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('المدينة','City'),LX('الزون','Zone'),LX('الباقة','Package'),LX('الحصص','Sessions'),LX('المستخدمة','Used'),LX('المتبقية','Remaining'),LX('البداية','Start'),LX('النهاية','End'),LX('مقدم الخدمة','Provider'),LX('المدفوع','Paid')]];
-    CUSTOMERS.filter(crmHasReal).forEach(c=>crmRealTxns(c).forEach(t=>rows.push([c.name,c.phone,cityLabel(c.city),c.zoneId!=null?'Z'+c.zoneId:'',t.item||t.cat,t.sessions||0,t.used||0,t.remaining||0,crmStart(t),crmEnd(t),t.trainer,t.paid])));
+    const cq=String(window._crmSearch||'').trim();
+    CUSTOMERS.filter(crmHasReal).filter(c=>!cq||String(c.name||'').indexOf(cq)>=0||String(c.phone||'').indexOf(cq)>=0).forEach(c=>crmRealTxns(c).forEach(t=>rows.push([c.name,c.phone,cityLabel(c.city),c.zoneId!=null?'Z'+c.zoneId:'',t.item||t.cat,t.sessions||0,t.used||0,t.remaining||0,crmStart(t),crmEnd(t),t.trainer,t.paid])));
     fn='customers.xlsx';
   }else if(sec==='sales'&&(sub==='new'||sub==='renew')){
     const type=sub==='renew'?'Renewal':'New';
     rows=[[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('المدينة','City'),LX('الزون','Zone'),LX('الباقة','Package'),LX('الحصص','Sessions'),LX('مقدم الخدمة','Provider'),LX('المدفوع','Paid'),LX('ينتهي','Expires')]];
-    crmTxnsWithType().filter(t=>t._dtype===type).forEach(t=>rows.push([t.name,t.phone,cityLabel(t.city),t.zoneId!=null?'Z'+t.zoneId:'',t.item||t.cat,t.sessions||0,t.trainer,t.paid,crmEnd(t)]));
+    crmTxnsWithType().filter(t=>t._dtype===type&&crmSalesPeriodMatch(t)&&crmSalesSearchMatch(t)).forEach(t=>rows.push([t.name,t.phone,cityLabel(t.city),t.zoneId!=null?'Z'+t.zoneId:'',t.item||t.cat,t.sessions||0,t.trainer,t.paid,crmEnd(t)]));
     fn='sales_'+sub+'.xlsx';
   }else if(sec==='service'&&sub==='leads'){
     rows=[[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('المدينة','City'),LX('الزون','Zone'),LX('الهدف','Goal'),LX('الحالة','State'),LX('حالة CS','CS status'),LX('متابعة بتاريخ','Follow on'),LX('عدد المكالمات','Calls'),LX('آخر ملاحظة','Last note'),LX('تاريخ التسجيل','Registered')]];
     const stMap={subscribed:'اشترك',attended:'حضر',booked:'حجز',noshow:'حجز وما حضر',noanswer:'لا رد',closed:'مغلق',duetoday:'متابعة اليوم',uncontacted:'جديد',inprogress:'قيد المتابعة'};
-    LEADS.forEach(l=>{const log=l.callLog||[];const last=log[log.length-1];rows.push([l.name,l.phone,l.cityName||cityLabel(l.city),l.zoneId!=null?'Z'+l.zoneId:'',l.goal||'',stMap[crmLeadState(l)]||'',l.status||'',l.nextFollow||'',log.length,last?(last.note||''):'',String(l.createdOn||'').slice(0,10)]);});
+    const lf=crmState.leadFilter||'';
+    LEADS.filter(l=>crmLeadSearchMatch(l)&&(!lf||(lf==='duetoday'?(crmLeadDue(l)&&crmLeadState(l)!=='subscribed'):crmLeadState(l)===lf))).forEach(l=>{const log=l.callLog||[];const last=log[log.length-1];rows.push([l.name,l.phone,l.cityName||cityLabel(l.city),l.zoneId!=null?'Z'+l.zoneId:'',l.goal||'',stMap[crmLeadState(l)]||'',l.status||'',l.nextFollow||'',log.length,last?(last.note||''):'',String(l.createdOn||'').slice(0,10)]);});
     fn='leads.xlsx';
   }else if(sec==='service'&&sub==='free'){
     rows=[[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('المدينة','City'),LX('الموعد','Appointment'),LX('مقدم الخدمة','Provider'),LX('من حجزها','Booked by'),LX('الحالة','Status'),LX('اشترك؟','Subscribed?'),LX('سبب عدم الاشتراك','No-sub reason')]];
-    FREE_SESSIONS.forEach(f=>rows.push([f.name,f.phone,cityLabel(f.city),f.scheduledDate,f.trainer,f.bookedBy||'',f.status,crmIsConverted(f)?LX('نعم','Yes'):LX('لا','No'),f.notSubReason||'']));
+    FREE_SESSIONS.filter(f=>crmFreeDateMatch(f)&&crmFreeStatusMatch(f)&&crmFreeSearchMatch(f)).forEach(f=>rows.push([f.name,f.phone,cityLabel(f.city),f.scheduledDate,f.trainer,f.bookedBy||'',f.status,crmIsConverted(f)?LX('نعم','Yes'):LX('لا','No'),f.notSubReason||'']));
     fn='free_sessions.xlsx';
   }else if(sec==='service'&&sub==='complaints'){
     rows=[[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الشكوى','Complaint'),LX('الأولوية','Priority'),LX('مقدم الخدمة','Provider'),LX('محوّلة إلى','Assigned To'),LX('رد المسؤول','Reply'),LX('الحالة','Status'),LX('أُنشئت','Created'),LX('حُلّت','Resolved')]];
@@ -4288,23 +4291,24 @@ function importFreeSessions(rows){
   const data=rows.slice(1).filter(r=>r[F.mob]&&String(r[F.mob]).trim());
   if(!data.length){toast(LX('❌ لا توجد صفوف','❌ No rows'));return;}
   const mapStatus=s=>{s=String(s||'').toLowerCase();if(/cancel|ملغ|الغاء|الغ/.test(s))return 'cancelled';if(/complet|confirm|done|attended|مكتمل|مؤكد|تم/.test(s))return 'confirmed';return 'scheduled';};
+  const batchId='b'+Date.now();
   const parsed=data.map(r=>{const g=crmGeocode(r[F.addr]||'');return {sessionId:String(r[F.sid]).trim(),phone:String(r[F.mob]).trim(),name:r[F.name]||'',email:r[F.email]||'',address:r[F.addr]||'',city:g.city||null,cityName:g.cityName||'',zoneId:(g.zoneId==null?null:g.zoneId),package:r[F.pkg]||'',expiry:String(r[F.exp]||'').slice(0,10),trainer:r[F.trainer]||'',scheduledDate:r[F.sched]||'',createdDate:r[F.cdate]||'',status:mapStatus(r[F.st]),notSubReason:'',calledBy:'',followNote:''};});
   let before=0;
   mutateListDoc('free_sessions',current=>{
     before=current.length;
     const map={};current.forEach(f=>map[f.sessionId]=f);
     parsed.forEach(p=>{ if(map[p.sessionId]){const o=map[p.sessionId];
-      // file status wins when it's definitive (confirmed/cancelled); else keep manual status. Keep manual follow-up data.
+      // file status wins when it's definitive (confirmed/cancelled); else keep manual status. Keep manual follow-up data + original batch.
       const status=(p.status==='confirmed'||p.status==='cancelled')?p.status:(o.status||p.status);
-      map[p.sessionId]=Object.assign({},p,{status,notSubReason:o.notSubReason||'',calledBy:o.calledBy||'',followNote:o.followNote||'',followLog:o.followLog||[],followDate:o.followDate||'',bookedBy:o.bookedBy||''});
-    } else map[p.sessionId]=p; });
+      map[p.sessionId]=Object.assign({},p,{status,notSubReason:o.notSubReason||'',calledBy:o.calledBy||'',followNote:o.followNote||'',followLog:o.followLog||[],followDate:o.followDate||'',bookedBy:o.bookedBy||'',_batch:o._batch||batchId});
+    } else map[p.sessionId]=Object.assign({},p,{_batch:batchId}); });
     return Object.values(map);
   }).then(next=>{
     FREE_SESSIONS=next;
     const addedF=next.length-before;
     toast(LX(`✅ حصص مجانية: ${next.length} (أضيف ${addedF})`,`✅ Free sessions: ${next.length} (added ${addedF})`));
     try{logHistory(LX('رفع حصص مجانية','Upload free sessions'),`${parsed.length} ${LX('صف','rows')}, ${LX('الإجمالي','total')} ${next.length}`,'import');}catch(e){}
-    crmLogUpload('free',{total:parsed.length,added:addedF,dupe:Math.max(0,parsed.length-addedF),skipped:0,note:''});
+    crmLogUpload('free',{total:parsed.length,added:addedF,dupe:Math.max(0,parsed.length-addedF),skipped:0,note:'',batch:batchId});
     crmRender();
   }).catch(e=>{console.error(e);toast(LX('❌ فشل الحفظ: ','❌ Save failed: ')+e.message);});
 }
@@ -4550,6 +4554,7 @@ function importLeads(rows){
   const data=rows.slice(1).filter(r=>(F.mob>=0&&r[F.mob])||(F.id>=0&&r[F.id]));
   if(!data.length){toast(LX('❌ لا توجد صفوف','❌ No rows'));return;}
   const parseLoc=s=>{const m=String(s||'').match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/);return m?{lat:parseFloat(m[1]),lng:parseFloat(m[2])}:null;};
+  const batchId='b'+Date.now();
   const parsed=data.map(r=>{
     const ll=parseLoc(r[F.loc]);let zoneId=null;if(ll&&typeof findZone==='function'){const z=findZone(ll.lat,ll.lng);if(z)zoneId=z.id;}
     let city=null,cityName=r[F.city]||'';
@@ -4561,11 +4566,11 @@ function importLeads(rows){
     before=cur.length;const map={};cur.forEach(l=>map[l.leadId]=l);
     parsed.forEach(p=>{const o=map[p.leadId];
       // update-only: refresh registration fields, KEEP all CS fields (status/callLog/nextFollow/mainNote)
-      if(o)map[p.leadId]=Object.assign({},p,{status:o.status||'',callLog:o.callLog||[],nextFollow:o.nextFollow||'',mainNote:o.mainNote||''});
-      else map[p.leadId]=Object.assign({},p,{status:'',callLog:[],nextFollow:'',mainNote:''});
+      if(o)map[p.leadId]=Object.assign({},p,{status:o.status||'',callLog:o.callLog||[],nextFollow:o.nextFollow||'',mainNote:o.mainNote||'',_batch:o._batch||batchId});
+      else map[p.leadId]=Object.assign({},p,{status:'',callLog:[],nextFollow:'',mainNote:'',_batch:batchId});
     });
     return Object.values(map);
-  }).then(n=>{LEADS=n;const added=n.length-before;toast(LX(`✅ عملاء جدد: ${n.length} (أضيف ${added})`,`✅ Leads: ${n.length} (added ${added})`));crmLogUpload('leads',{total:parsed.length,added,dupe:Math.max(0,parsed.length-added),skipped:0,note:''});try{logHistory(LX('رفع عملاء جدد','Upload leads'),`${parsed.length}`,'import');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل الحفظ: ','❌ Save failed: ')+e.message);});
+  }).then(n=>{LEADS=n;const added=n.length-before;toast(LX(`✅ عملاء جدد: ${n.length} (أضيف ${added})`,`✅ Leads: ${n.length} (added ${added})`));crmLogUpload('leads',{total:parsed.length,added,dupe:Math.max(0,parsed.length-added),skipped:0,note:'',batch:batchId});try{logHistory(LX('رفع عملاء جدد','Upload leads'),`${parsed.length}`,'import');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل الحفظ: ','❌ Save failed: ')+e.message);});
 }
 // derived funnel state per lead
 function crmLeadSub(l){const c=CUSTOMERS.find(x=>x.phone===l.phone);return !!(c&&(c.txns||[]).some(t=>(t.paid||0)>0));}
@@ -4655,12 +4660,27 @@ function crmSettings(){
 }
 function crmUploadLog(){
   const arr=(CRM_UPLOADS||[]).slice().sort((a,b)=>b.id-a.id).slice(0,50);
-  const pageName=p=>p==='sales'?LX('مبيعات','Sales'):p==='free'?LX('حصص مجانية','Free sessions'):p;
+  const pageName=p=>p==='sales'?LX('مبيعات','Sales'):p==='free'?LX('حصص مجانية','Free sessions'):p==='leads'?LX('عملاء جدد','Leads'):p;
+  const canUndo=(typeof isSuperAdmin==='function'&&isSuperAdmin());
   const rows=arr.length?arr.map(u=>{
     const issue=(u.note?`<span class="crm-pill pill-red">${esc(u.note)}</span> `:'')+(u.dupe>0?`<span class="crm-pill pill-amber">${LX('مكرر','dup')} ${u.dupe}</span> `:'')+(u.skipped>0?`<span class="crm-pill pill-amber">${LX('متخطّى','skipped')} ${u.skipped}</span>`:'');
-    return `<tr><td>${pageName(u.page)}</td><td>${esc(u.by||'—')}</td><td style="white-space:nowrap;font-size:11px">${esc(u.at||'')}</td><td>${u.total||0}</td><td style="color:#166534;font-weight:700">${u.added||0}</td><td>${issue||`<span class="crm-pill pill-green">${LX('سليم','clean')}</span>`}</td></tr>`;
-  }).join(''):`<tr><td colspan="6"><div class="crm-empty">${LX('لا عمليات رفع بعد','No uploads yet')}</div></td></tr>`;
-  return `<div class="crm-card"><h3>📤 ${LX('سجل رفع البيانات','Data upload log')}</h3><div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('من رفع، متى، وكم صف أُضيف/مكرّر/متخطّى — للتأكد من سلامة كل رفع','Who uploaded, when, and rows added/duplicate/skipped — to verify each upload')}</div><div style="overflow-x:auto"><table class="crm-table"><thead><tr><th>${LX('الصفحة','Page')}</th><th>${LX('بواسطة','By')}</th><th>${LX('التاريخ','Date')}</th><th>${LX('صفوف','Rows')}</th><th>${LX('أُضيف','Added')}</th><th>${LX('ملاحظات','Issues')}</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+    const undo=(canUndo&&u.batch&&!u.undone&&(u.added||0)>0)?`<button class="btn btn-danger" style="font-size:10px;padding:2px 7px" onclick="crmUndoUpload('${esc(u.batch)}','${u.page}',${u.id})" title="${LX('حذف ما أضافه هذا الرفع فقط','Delete only what this upload added')}">↩️ ${LX('تراجع','Undo')}</button>`:(u.undone?`<span class="crm-pill pill-gray">${LX('تراجَع','undone')}</span>`:'—');
+    return `<tr><td>${pageName(u.page)}</td><td>${esc(u.by||'—')}</td><td style="white-space:nowrap;font-size:11px">${esc(u.at||'')}</td><td>${u.total||0}</td><td style="color:#166534;font-weight:700">${u.added||0}</td><td>${issue||`<span class="crm-pill pill-green">${LX('سليم','clean')}</span>`}</td><td>${undo}</td></tr>`;
+  }).join(''):`<tr><td colspan="7"><div class="crm-empty">${LX('لا عمليات رفع بعد','No uploads yet')}</div></td></tr>`;
+  return `<div class="crm-card"><h3>📤 ${LX('سجل رفع البيانات','Data upload log')}</h3><div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('من رفع، متى، وكم صف أُضيف — وتقدر تتراجع عن أي رفع غلط (يحذف ما أضافه فقط)','Who uploaded, when, rows added — and undo any wrong upload (removes only what it added)')}</div><div style="overflow-x:auto"><table class="crm-table"><thead><tr><th>${LX('الصفحة','Page')}</th><th>${LX('بواسطة','By')}</th><th>${LX('التاريخ','Date')}</th><th>${LX('صفوف','Rows')}</th><th>${LX('أُضيف','Added')}</th><th>${LX('ملاحظات','Issues')}</th><th>${LX('تراجع','Undo')}</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function crmUndoUpload(batch,page,logId){
+  if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Manager only'));return;}
+  if(!confirm(LX('تراجع عن هذا الرفع؟ سيُحذف فقط ما أضافه هذا الملف، ولن يتأثر الباقي.','Undo this upload? Only what this file added will be removed; the rest is untouched.')))return;
+  let job;
+  if(page==='sales'){
+    job=mutateListDoc('customers',cur=>cur.map(c=>Object.assign({},c,{txns:(c.txns||[]).filter(t=>t._batch!==batch)})).filter(c=>(c.txns||[]).length)).then(n=>{CUSTOMERS=n;});
+  }else if(page==='free'){
+    job=mutateListDoc('free_sessions',cur=>cur.filter(f=>f._batch!==batch)).then(n=>{FREE_SESSIONS=n;});
+  }else if(page==='leads'){
+    job=mutateListDoc('crm_leads',cur=>cur.filter(l=>l._batch!==batch)).then(n=>{LEADS=n;});
+  }else{toast(LX('نوع غير معروف','Unknown type'));return;}
+  job.then(()=>mutateListDoc('crm_uploads',cur=>cur.map(u=>u.id===logId?Object.assign({},u,{undone:true}):u))).then(n=>{CRM_UPLOADS=n;toast('↩️ '+LX('تم التراجع عن الرفع','Upload undone'));try{logHistory(LX('تراجع عن رفع','Undo upload'),page,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل: ','❌ Failed: ')+e.message);});
 }
 function crmDangerZone(){
   if(typeof isSuperAdmin!=='function'||!isSuperAdmin())return '';
@@ -4672,18 +4692,20 @@ function crmDangerZone(){
       ${btn("crmClearData('customers')",LX('حذف العملاء والمبيعات','Delete customers & sales'))}
       ${btn("crmClearData('free')",LX('حذف الحصص المجانية','Delete free sessions'))}
       ${btn("crmClearData('service')",LX('حذف الشكاوى/الاقتراحات/الردود','Delete complaints/suggestions/replies'))}
+      ${btn("crmClearData('leads')",LX('حذف العملاء الجدد (Leads)','Delete leads'))}
       ${btn("crmClearData('all')","🗑 "+LX('حذف كل بيانات الـ CRM','Delete ALL CRM data'))}
     </div></div>`;
 }
 function crmClearData(which){
   if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('فقط المدير الأساسي (shagaf2024)','Super-admin (shagaf2024) only'));return;}
-  const names={customers:LX('العملاء والمبيعات','customers & sales'),free:LX('الحصص المجانية','free sessions'),service:LX('الشكاوى/الاقتراحات/الردود','complaints/suggestions/replies'),all:LX('كل بيانات الـ CRM','ALL CRM data')};
+  const names={customers:LX('العملاء والمبيعات','customers & sales'),free:LX('الحصص المجانية','free sessions'),service:LX('الشكاوى/الاقتراحات/الردود','complaints/suggestions/replies'),leads:LX('العملاء الجدد','leads'),all:LX('كل بيانات الـ CRM','ALL CRM data')};
   if(!confirm(LX('⚠️ تأكيد حذف ','⚠️ Confirm delete ')+names[which]+LX(' نهائياً؟','? Permanent.')))return;
   if(!confirm(LX('تأكيد أخير — لا رجعة. متابعة؟','Final confirmation — no undo. Proceed?')))return;
   const jobs=[];
   if(which==='customers'||which==='all')jobs.push(db.collection('app').doc('customers').set({list:[]}).then(()=>{CUSTOMERS=[];}));
   if(which==='free'||which==='all')jobs.push(db.collection('app').doc('free_sessions').set({list:[]}).then(()=>{FREE_SESSIONS=[];}));
   if(which==='service'||which==='all')jobs.push(db.collection('app').doc('crm_service').set({map:{complaints:[],suggestions:[],desk:[],followups:[]}}).then(()=>{CRM_SVC={complaints:[],suggestions:[],desk:[],followups:[]};}));
+  if(which==='leads'||which==='all')jobs.push(db.collection('app').doc('crm_leads').set({list:[]}).then(()=>{LEADS=[];}));
   Promise.all(jobs).then(()=>{toast('🗑 '+LX('تم الحذف','Deleted'));try{logHistory(LX('حذف بيانات CRM','Clear CRM data'),names[which],'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل الحذف: ','❌ Delete failed: ')+e.message);});
 }
 function crmCfgAdd(key){const el=document.getElementById('cfg-'+key);if(!el)return;const v=el.value.trim();if(!v)return;crmSaveCfg(key,(CRM_CFG[key]||[]).concat(v));}
