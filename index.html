@@ -3961,15 +3961,16 @@ function crmDrillBody(k){
 function crmSalesList(type){
   let rows=crmTxnsWithType().filter(t=>t._dtype===type);
   const sort=crmState.salesSort||'newest';
+  const endMs=t=>{const d=new Date(String(crmEnd(t)).slice(0,10)+'T00:00:00');return isNaN(d)?0:d.getTime();};
   const cmp={
-    newest:(a,b)=>crmTxnDate(b)-crmTxnDate(a),
-    oldest:(a,b)=>crmTxnDate(a)-crmTxnDate(b),
+    newest:(a,b)=>endMs(b)-endMs(a),
+    oldest:(a,b)=>endMs(a)-endMs(b),
     provider:(a,b)=>String(a.trainer||'').localeCompare(String(b.trainer||'')),
     package:(a,b)=>String(a.item||a.cat||'').localeCompare(String(b.item||b.cat||'')),
     city:(a,b)=>String(cityLabel(a.city)).localeCompare(String(cityLabel(b.city)))
   };
   rows=rows.slice().sort(cmp[sort]||cmp.newest);
-  const SS=[['newest',LX('الأحدث','Newest')],['oldest',LX('الأقدم','Oldest')],['provider',LX('مقدم الخدمة','Provider')],['package',LX('الباقة','Package')],['city',LX('المدينة','City')]];
+  const SS=[['newest',LX('النهاية: الأحدث','End: Newest')],['oldest',LX('النهاية: الأقدم','End: Oldest')],['provider',LX('مقدم الخدمة','Provider')],['package',LX('الباقة','Package')],['city',LX('المدينة','City')]];
   const sortSel=`<span style="font-size:11px;color:var(--g600)">${LX('ترتيب:','Sort:')}</span><select onchange="crmSetSalesSort(this.value)" style="font-size:11px;padding:3px 6px;width:auto">${SS.map(s=>`<option value="${s[0]}" ${sort===s[0]?'selected':''}>${s[1]}</option>`).join('')}</select>`;
   const up=crmUploadBar();
   const bar=`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px">${sortSel}</div><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px">⬇️ ${LX('تصدير Excel','Export Excel')}</button></div>`;
