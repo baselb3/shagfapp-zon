@@ -4518,7 +4518,9 @@ function crmWaitlist(){
     <div class="crm-card"><h3>🏙 ${LX('المدن الأكثر طلباً','Most-requested cities')}</h3>${topCity.length?topCity.map(([c,n])=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid var(--g100)"><span>${esc(c)}</span><span style="font-weight:700">${n}</span></div>`).join(''):'<div class="crm-empty">—</div>'}</div>
     <div class="crm-card"><h3>🔵 ${LX('أكثر زون عليه طلب','Top zone demand')}</h3>${topZone.length?topZone.map(([z,n])=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid var(--g100)"><span>${LX('زون','Zone')} ${z}</span><span style="font-weight:700">${n}</span></div>`).join(''):'<div class="crm-empty">—</div>'}</div></div>`;
   const rows=WAITLIST.slice().sort((a,b)=>b.id-a.id);
-  const list=rows.length?`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('أُضيف','Added')}</th><th></th></tr></thead><tbody>${rows.map(w=>`<tr><td>${esc(w.name)}</td><td dir=ltr>${esc(w.phone||'—')}</td><td>${esc(w.cityName||w.city||'—')}</td><td>${w.zoneId!=null?LX('زون','Zone')+' '+w.zoneId:'—'}</td><td style="white-space:nowrap;font-size:11px">${esc(w.at||'')}</td><td>${can('manage_complaints')?`<button class="btn btn-danger" style="font-size:10px;padding:2px 7px" onclick="crmWaitDel(${w.id})">✕</button>`:''}</td></tr>`).join('')}</tbody></table></div>`:`<div class="crm-empty">${LX('قائمة الانتظار فارغة','Waiting list is empty')}</div>`;
+  const _seen={};let _dup=0;WAITLIST.forEach(w=>{const k=crmNormPhone(w.phone);if(!k)return;if(_seen[k])_dup++;else _seen[k]=1;});
+  const dedupeBtn=(_dup>0&&can('manage_complaints'))?`<div style="margin-bottom:8px"><button class="btn btn-danger" style="font-size:11px;padding:3px 10px" onclick="crmWaitDedupe()">🧹 ${LX('حذف المكررات','Remove duplicates')} (${_dup})</button></div>`:'';
+  const list=rows.length?dedupeBtn+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('أُضيف','Added')}</th><th></th></tr></thead><tbody>${rows.map(w=>`<tr><td>${esc(w.name)}</td><td dir=ltr>${esc(w.phone||'—')}</td><td>${esc(w.cityName||w.city||'—')}</td><td>${w.zoneId!=null?LX('زون','Zone')+' '+w.zoneId:'—'}</td><td style="white-space:nowrap;font-size:11px">${esc(w.at||'')}</td><td>${can('manage_complaints')?`<button class="btn btn-danger" style="font-size:10px;padding:2px 7px" onclick="crmWaitDel(${w.id})">✕</button>`:''}</td></tr>`).join('')}</tbody></table></div>`:`<div class="crm-empty">${LX('قائمة الانتظار فارغة','Waiting list is empty')}</div>`;
   return `<div style="font-size:11px;color:var(--g400);margin-bottom:10px">${LX('سجّل العملاء المنتظرين لمعرفة المدن/الزونات الأكثر طلباً. المدن المعروفة تظهر لها الزونات؛ غيرها بالمدينة فقط.','Log waiting customers to see most-requested cities/zones. Known cities show zones; others = city only.')}</div>${form}${stats}${list}`;
 }
 function crmWlCityChange(v){
@@ -4527,6 +4529,9 @@ function crmWlCityChange(v){
   if(ct){const zs=(ZONES||[]).filter(z=>(z.cityId||'riyadh')===ct.id);zsel.innerHTML='<option value="">— '+LX('بدون زون','No zone')+' —</option>'+zs.map(z=>`<option value="${z.id}">${LX('زون','Zone')} ${z.id}</option>`).join('');wrap.style.display='';}
   else{wrap.style.display='none';zsel.innerHTML='';}
 }
+// توحيد رقم الجوال للمقارنة (يشيل غير الأرقام، ورمز الدولة 966، والصفر البادئ)
+function crmNormPhone(p){return String(p||'').replace(/\D/g,'').replace(/^966/,'').replace(/^0/,'');}
+function crmWaitHas(list,phone,leadId){const np=crmNormPhone(phone);return (list||[]).some(w=>(np&&crmNormPhone(w.phone)===np)||(leadId&&w.src==='lead'&&w.leadId===leadId));}
 function crmWaitAdd(){
   if(!can('manage_complaints')){toast(LX('لا صلاحية','No permission'));return;}
   const name=(document.getElementById('wl-name').value||'').trim();if(!name){toast(LX('اكتب اسم العميل','Enter customer name'));return;}
@@ -4535,7 +4540,14 @@ function crmWaitAdd(){
   const ct=(CITIES||[]).find(c=>c.ar===cityRaw||c.en===cityRaw);
   const zsel=document.getElementById('wl-zone');const zv=ct&&zsel?zsel.value:'';
   const rec={id:Date.now(),name,phone,city:ct?ct.id:null,cityName:ct?(lang==='ar'?ct.ar:ct.en):cityRaw,zoneId:(ct&&zv!=='')?parseInt(zv,10):null,by:currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'',at:new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'})};
-  mutateListDoc('crm_waitlist',cur=>cur.concat(rec)).then(n=>{WAITLIST=n;toast('✅ '+LX('أُضيف','Added'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  const before=WAITLIST.length;
+  mutateListDoc('crm_waitlist',cur=>crmWaitHas(cur,rec.phone)?cur:cur.concat(rec)).then(n=>{WAITLIST=n;toast(n.length>before?'✅ '+LX('أُضيف','Added'):'ℹ️ '+LX('الرقم موجود مسبقاً في قائمة الانتظار','This number is already in the waiting list'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
+function crmWaitDedupe(){
+  if(!can('manage_complaints')){toast(LX('لا صلاحية','No permission'));return;}
+  if(!confirm(LX('حذف العملاء المكررين (نفس رقم الجوال) والإبقاء على الأقدم؟','Remove duplicate customers (same mobile), keeping the oldest?')))return;
+  const before=WAITLIST.length;
+  mutateListDoc('crm_waitlist',cur=>{const seen={};const keep=[];cur.slice().sort((a,b)=>a.id-b.id).forEach(w=>{const k=crmNormPhone(w.phone);if(k&&seen[k])return;if(k)seen[k]=1;keep.push(w);});return keep;}).then(n=>{WAITLIST=n;toast('🧹 '+LX('تم حذف ','Removed ')+(before-n.length)+LX(' مكرر',' duplicate(s)'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmWaitDel(id){
   if(!can('manage_complaints'))return;
@@ -4676,10 +4688,10 @@ function crmLeadSave(leadId){
     const finish=()=>{closeModal();crmRender();};
     if(outZone){
       const l=n.find(x=>x.leadId===leadId);
-      const dup=l&&WAITLIST.some(w=>(w.phone&&l.phone&&w.phone===l.phone)||(w.src==='lead'&&w.leadId===l.leadId));
-      if(l&&!dup){
+      if(l){
+        const before=WAITLIST.length;
         const rec={id:Date.now(),name:l.name||'',phone:l.phone||'',city:l.city||null,cityName:l.cityName||cityLabel(l.city)||'',zoneId:(l.zoneId!=null?l.zoneId:null),by:who,at:stamp,src:'lead',leadId:l.leadId};
-        mutateListDoc('crm_waitlist',cur=>cur.concat(rec)).then(w=>{WAITLIST=w;toast('💾 '+LX('تم — أُضيف لقائمة الانتظار تلقائياً','Saved — auto-added to waiting list'));finish();}).catch(e=>{console.error(e);toast('💾 '+LX('تم (تعذّر إضافته لقائمة الانتظار)','Saved (could not add to waiting list)'));finish();});
+        mutateListDoc('crm_waitlist',cur=>crmWaitHas(cur,l.phone,l.leadId)?cur:cur.concat(rec)).then(w=>{WAITLIST=w;toast(w.length>before?'💾 '+LX('تم — أُضيف لقائمة الانتظار تلقائياً','Saved — auto-added to waiting list'):'💾 '+LX('تم (موجود مسبقاً في قائمة الانتظار)','Saved (already in waiting list)'));finish();}).catch(e=>{console.error(e);toast('💾 '+LX('تم (تعذّر إضافته لقائمة الانتظار)','Saved (could not add to waiting list)'));finish();});
         return;
       }
     }
