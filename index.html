@@ -731,6 +731,7 @@ const ALL_PERMISSIONS = [
   {key:'delete_customers',ar:'حذف العملاء',              en:'Delete Customers'},
   {key:'manage_complaints',ar:'خدمة العملاء (شكاوى/ردود)',en:'Customer Service'},
   {key:'manage_followups',ar:'إدارة المتابعة',           en:'Manage Follow-ups'},
+  {key:'upload_data',    ar:'رفع ملفات البيانات (إكسل)',  en:'Upload Data Files'},
 ];
 
 // Default users - admin password + one viewer
@@ -3489,6 +3490,7 @@ auth.onAuthStateChanged(async (fbUser)=>{
 let CUSTOMERS=[];
 let FREE_SESSIONS=[];
 let WAITLIST=[];
+let CRM_UPLOADS=[];  // upload audit log: [{id,page,by,at,total,added,dupe,skipped,note}]
 let CRM_NOTIFS={};   // { username: [ {id,text,from,at,read,sec,sub} ] }
 let CRM_SVC={complaints:[],suggestions:[],desk:[],followups:[]};
 let CRM_CFG={
@@ -3593,6 +3595,15 @@ async function loadCrmData(){
     const nt=await db.collection('app').doc('crm_notifications').get();
     CRM_NOTIFS=nt.exists?(nt.data().map||{}):{};
   }catch(e){console.error('load crm_notifications',e);}
+  try{
+    const up=await db.collection('app').doc('crm_uploads').get();
+    CRM_UPLOADS=up.exists?(up.data().list||[]):[];
+  }catch(e){console.error('load crm_uploads',e);}
+}
+// record an upload event to the audit log
+function crmLogUpload(page,info){
+  const e=Object.assign({id:Date.now(),page,by:currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'',byUser:currentUser?currentUser.username:'',at:new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'})},info);
+  mutateListDoc('crm_uploads',cur=>cur.concat(e).slice(-100)).then(n=>{CRM_UPLOADS=n;}).catch(err=>console.error('logUpload',err));
 }
 // push a notification to a user (by username) + persist
 function crmNotify(username,text,sec,sub){
@@ -3652,7 +3663,7 @@ function crmSaveService(kind,arr){
 
 // ---------- CSV import (the daily sales upload) ----------
 function importSales(rows){
-  if(!can('edit_customers')){toast(LX('ليس لديك صلاحية رفع المبيعات','No permission to upload sales'));return;}
+  if(!can('upload_data')){toast(LX('ليس لديك صلاحية رفع الملفات','No permission to upload files'));crmLogUpload('sales',{total:0,added:0,dupe:0,skipped:0,note:LX('محاولة بلا صلاحية','blocked: no permission')});return;}
   if(!rows||!rows.length){toast(LX('❌ ملف فارغ','❌ Empty file'));return;}
   const H=rows[0].map(h=>String(h).trim());
   const I=n=>H.indexOf(n);
@@ -3694,8 +3705,10 @@ function importSales(rows){
     const added=after-beforeCount;
     const dupe=parsedTotal-added;
     CUSTOMERS=next;
+    const skipped=Math.max(0,(rows.length-1)-data.length);
     toast(LX(`✅ ${added} عملية جديدة · ${dupe} مكرّرة · ${geoZone} بزون · العملاء: ${next.length}`,`✅ ${added} new · ${dupe} dup · ${geoZone} zoned · customers: ${next.length}`));
     try{logHistory(LX('رفع مبيعات','Upload sales'),LX(`${added} عملية، ${dupe} مكررة، ${geoZone} حُدّد زونها، إجمالي العملاء ${next.length}`,`${added} ops, ${dupe} dup, ${geoZone} zoned, total ${next.length}`),'import');}catch(e){}
+    crmLogUpload('sales',{total:data.length,added,dupe,skipped,note:''});
     if(crmState.mode!=='crm')switchMode('crm');
     crmRender();
   }).catch(e=>{console.error('importSales',e);toast(LX('❌ فشل الحفظ: ','❌ Save failed: ')+e.message);});
@@ -3805,7 +3818,7 @@ function crmExportCurrent(){
 }
 function crmPrint(){window.print();}
 function crmUploadBar(){
-  if(!can('edit_customers'))return '';
+  if(!can('upload_data'))return '';
   return `<div class="crm-upload"><span style="font-size:12px;color:var(--primary);font-weight:600">📄 ${LX('رفع ملف المبيعات (آخر اليوم) — يحدّد جديد/تجديد تلقائياً ولا يكرّر فاتورة مرفوعة سابقاً','Upload the sales file (end of day) — auto-detects new/renewal and never double-counts an already-uploaded invoice')}</span><button class="btn btn-primary" onclick="document.getElementById('salesFile').click()">📥 ${LX('رفع إكسل / CSV','Upload Excel / CSV')}</button></div>`;
 }
 function crmFmtExpiry(e){
@@ -4202,7 +4215,7 @@ function crmIsConverted(f){
   return (cu.txns||[]).some(t=>(t.paid||0)>0);
 }
 function importFreeSessions(rows){
-  if(!can('manage_complaints')&&!can('manage_followups')){toast(LX('ليس لديك صلاحية رفع الحصص','No permission to upload sessions'));return;}
+  if(!can('upload_data')){toast(LX('ليس لديك صلاحية رفع الملفات','No permission to upload files'));crmLogUpload('free',{total:0,added:0,dupe:0,skipped:0,note:LX('محاولة بلا صلاحية','blocked: no permission')});return;}
   if(!rows||!rows.length){toast(LX('❌ ملف فارغ','❌ Empty file'));return;}
   const H=rows[0].map(h=>String(h).trim());const I=n=>H.indexOf(n);
   const F={sid:I('Session ID'),name:I('Customer Name'),mob:I('Customer Mobile'),email:I('Customer Email'),addr:I('Address'),pkg:I('Package'),exp:I('Expiry Date'),trainer:I('Trainer Name'),idate:I('Invoice Date'),cdate:I('Created Date'),sched:I('Scheduled Date'),st:I('Status')};
@@ -4223,8 +4236,10 @@ function importFreeSessions(rows){
     return Object.values(map);
   }).then(next=>{
     FREE_SESSIONS=next;
-    toast(LX(`✅ حصص مجانية: ${next.length} (أضيف ${next.length-before})`,`✅ Free sessions: ${next.length} (added ${next.length-before})`));
+    const addedF=next.length-before;
+    toast(LX(`✅ حصص مجانية: ${next.length} (أضيف ${addedF})`,`✅ Free sessions: ${next.length} (added ${addedF})`));
     try{logHistory(LX('رفع حصص مجانية','Upload free sessions'),`${parsed.length} ${LX('صف','rows')}, ${LX('الإجمالي','total')} ${next.length}`,'import');}catch(e){}
+    crmLogUpload('free',{total:parsed.length,added:addedF,dupe:Math.max(0,parsed.length-addedF),skipped:0,note:''});
     crmRender();
   }).catch(e=>{console.error(e);toast(LX('❌ فشل الحفظ: ','❌ Save failed: ')+e.message);});
 }
@@ -4238,7 +4253,7 @@ function crmFreeDay(f){return String(f.scheduledDate||'').replace(' at ',' ').sl
 function crmFreeDateMatch(f){const sel=crmState.freeDate;if(!sel||sel==='all')return true;return crmFreeDay(f)===sel;}
 function crmSetFreeDate(d){crmState.freeDate=d;crmRender();}
 function crmFreeSessions(){
-  const up=(can('manage_complaints')||can('manage_followups'))?`<div class="crm-upload"><span style="font-size:12px;color:var(--primary);font-weight:600">📄 ${LX('ارفع يومياً الحصص المجانية المجدولة — والحالة تُدار من هنا (تأكيد/إلغاء) + من حجزها','Upload scheduled free sessions daily — manage status here (confirm/cancel) + who booked')}</span><button class="btn btn-primary" onclick="document.getElementById('freeFile').click()">📥 ${LX('رفع ملف الحصص','Upload sessions file')}</button></div>`:'';
+  const up=can('upload_data')?`<div class="crm-upload"><span style="font-size:12px;color:var(--primary);font-weight:600">📄 ${LX('ارفع يومياً الحصص المجانية المجدولة — والحالة تُدار من هنا (تأكيد/إلغاء) + من حجزها','Upload scheduled free sessions daily — manage status here (confirm/cancel) + who booked')}</span><button class="btn btn-primary" onclick="document.getElementById('freeFile').click()">📥 ${LX('رفع ملف الحصص','Upload sessions file')}</button></div>`:'';
   if(!FREE_SESSIONS.length)return up+`<div class="crm-empty">${LX('لا توجد حصص مجانية بعد — ارفع الملف','No free sessions yet — upload the file')}</div>`;
   const DF=[['-2',LX('أول أمس','2 days ago')],['-1',LX('أمس','Yesterday')],['0',LX('اليوم','Today')],['1',LX('بكرا','Tomorrow')],['all',LX('الكل','All')]];
   const dayBtns=DF.map(b=>{const val=b[0]==='all'?'all':crmDayStr(+b[0]);return `<button class="crm-subbtn ${crmState.freeDate===val||(!crmState.freeDate&&b[0]==='all')?'on':''}" onclick="crmSetFreeDate('${val}')">${b[1]}</button>`;}).join('');
@@ -4403,7 +4418,7 @@ function crmWaitlist(){
   const form=can('manage_complaints')?`<div class="crm-card"><h3>➕ ${LX('إضافة لقائمة الانتظار','Add to waiting list')}</h3>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">
       <div><label class="form-label">${LX('اسم العميل','Customer name')}</label><input id="wl-name"/></div>
-      <div><label class="form-label">${LX('الجوال (اختياري)','Mobile (optional)')}</label><input id="wl-phone" dir="ltr"/></div>
+      <div><label class="form-label">${LX('الجوال (إلزامي)','Mobile (required)')}</label><input id="wl-phone" dir="ltr"/></div>
       <div><label class="form-label">${LX('المدينة','City')}</label><input id="wl-city" list="wl-cities" oninput="crmWlCityChange(this.value)" placeholder="${LX('اختر أو اكتب مدينة','pick or type a city')}"/>${dl}</div>
       <div id="wl-zonewrap" style="display:none"><label class="form-label">${LX('الزون','Zone')}</label><select id="wl-zone"></select></div>
     </div>
@@ -4429,7 +4444,7 @@ function crmWlCityChange(v){
 function crmWaitAdd(){
   if(!can('manage_complaints')){toast(LX('لا صلاحية','No permission'));return;}
   const name=(document.getElementById('wl-name').value||'').trim();if(!name){toast(LX('اكتب اسم العميل','Enter customer name'));return;}
-  const phone=(document.getElementById('wl-phone').value||'').trim();
+  const phone=(document.getElementById('wl-phone').value||'').trim();if(!phone){toast(LX('رقم الجوال إلزامي','Mobile number is required'));return;}
   const cityRaw=(document.getElementById('wl-city').value||'').trim();
   const ct=(CITIES||[]).find(c=>c.ar===cityRaw||c.en===cityRaw);
   const zsel=document.getElementById('wl-zone');const zv=ct&&zsel?zsel.value:'';
@@ -4453,7 +4468,17 @@ function crmSettings(){
     ${block('complaintStatuses',LX('مراحل الشكوى (كيف تمشي)','Complaint stages (workflow)'),LX('بالترتيب — آخر مرحلة تُعتبر «تم الحل». زر ↻ ينقل للمرحلة التالية','In order — last stage = “resolved”. The ↻ button moves to the next stage'))}
     ${block('complaintPriorities',LX('أولويات الشكوى','Complaint priorities'),'')}
     ${block('responsibles',LX('المسؤولون عن الشكاوى','Complaint responsibles'),LX('تظهر في خانة «محوّلة إلى» داخل الشكوى','Shown in the “Assigned to” field'))}
+    ${crmUploadLog()}
     ${crmDangerZone()}`;
+}
+function crmUploadLog(){
+  const arr=(CRM_UPLOADS||[]).slice().sort((a,b)=>b.id-a.id).slice(0,50);
+  const pageName=p=>p==='sales'?LX('مبيعات','Sales'):p==='free'?LX('حصص مجانية','Free sessions'):p;
+  const rows=arr.length?arr.map(u=>{
+    const issue=(u.note?`<span class="crm-pill pill-red">${esc(u.note)}</span> `:'')+(u.dupe>0?`<span class="crm-pill pill-amber">${LX('مكرر','dup')} ${u.dupe}</span> `:'')+(u.skipped>0?`<span class="crm-pill pill-amber">${LX('متخطّى','skipped')} ${u.skipped}</span>`:'');
+    return `<tr><td>${pageName(u.page)}</td><td>${esc(u.by||'—')}</td><td style="white-space:nowrap;font-size:11px">${esc(u.at||'')}</td><td>${u.total||0}</td><td style="color:#166534;font-weight:700">${u.added||0}</td><td>${issue||`<span class="crm-pill pill-green">${LX('سليم','clean')}</span>`}</td></tr>`;
+  }).join(''):`<tr><td colspan="6"><div class="crm-empty">${LX('لا عمليات رفع بعد','No uploads yet')}</div></td></tr>`;
+  return `<div class="crm-card"><h3>📤 ${LX('سجل رفع البيانات','Data upload log')}</h3><div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('من رفع، متى، وكم صف أُضيف/مكرّر/متخطّى — للتأكد من سلامة كل رفع','Who uploaded, when, and rows added/duplicate/skipped — to verify each upload')}</div><div style="overflow-x:auto"><table class="crm-table"><thead><tr><th>${LX('الصفحة','Page')}</th><th>${LX('بواسطة','By')}</th><th>${LX('التاريخ','Date')}</th><th>${LX('صفوف','Rows')}</th><th>${LX('أُضيف','Added')}</th><th>${LX('ملاحظات','Issues')}</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 function crmDangerZone(){
   if(typeof isSuperAdmin!=='function'||!isSuperAdmin())return '';
