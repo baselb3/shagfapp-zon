@@ -3500,7 +3500,7 @@ let CRM_CFG={
   complaintPriorities:['عادية','عالية','عاجلة'],
   responsibles:[]
 };
-let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:''};
+let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false};
 let crmHidden={};      // per-metric privacy hide state
 let crmPrivacyAll=false;
 
@@ -4252,6 +4252,15 @@ function crmFreeHoursLeft(f){const d=crmSchedDate(f);return d?(d-new Date())/360
 function crmFreeDay(f){return String(f.scheduledDate||'').replace(' at ',' ').slice(0,10);}
 function crmFreeDateMatch(f){const sel=crmState.freeDate;if(!sel||sel==='all')return true;return crmFreeDay(f)===sel;}
 function crmSetFreeDate(d){crmState.freeDate=d;crmRender();}
+function crmFreeSearchMatch(f){const q=String(crmState.freeSearch||'').trim();if(!q)return true;return String(f.name||'').indexOf(q)>=0||String(f.phone||'').indexOf(q)>=0;}
+function crmSetFreeSearch(v){crmState.freeSearch=v;crmRender();var el=document.getElementById('freeSearch');if(el){el.focus();try{el.setSelectionRange(el.value.length,el.value.length);}catch(e){}}}
+function crmToggleFreeDup(){crmState.freeDup=!crmState.freeDup;crmRender();}
+function crmDeleteFreeSession(sid){
+  if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Manager only'));return;}
+  const f=FREE_SESSIONS.find(x=>x.sessionId===sid);
+  if(!confirm(LX('حذف هذه الحصة نهائياً؟ ','Delete this session? ')+(f?(f.name||'')+' · '+(f.phone||''):'')))return;
+  mutateListDoc('free_sessions',cur=>cur.filter(x=>x.sessionId!==sid)).then(n=>{FREE_SESSIONS=n;toast('🗑 '+LX('حُذفت','Deleted'));try{logHistory(LX('حذف حصة مجانية','Delete free session'),(f&&f.phone)||sid,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
 function crmFreeSessions(){
   const up=can('upload_data')?`<div class="crm-upload"><span style="font-size:12px;color:var(--primary);font-weight:600">📄 ${LX('ارفع يومياً الحصص المجانية المجدولة — والحالة تُدار من هنا (تأكيد/إلغاء) + من حجزها','Upload scheduled free sessions daily — manage status here (confirm/cancel) + who booked')}</span><button class="btn btn-primary" onclick="document.getElementById('freeFile').click()">📥 ${LX('رفع ملف الحصص','Upload sessions file')}</button></div>`:'';
   if(!FREE_SESSIONS.length)return up+`<div class="crm-empty">${LX('لا توجد حصص مجانية بعد — ارفع الملف','No free sessions yet — upload the file')}</div>`;
@@ -4262,21 +4271,28 @@ function crmFreeSessions(){
   const SF=[['',LX('النشطة','Active')],['confirmed',LX('مؤكدة','Confirmed')],['scheduled',LX('غير مؤكدة','Unconfirmed')],['cancelled',LX('ملغاة','Cancelled')],['all',LX('الكل','All')]];
   const sfBtns=SF.map(s=>`<button class="crm-subbtn ${ (crmState.freeStatus||'')===s[0]?'on':''}" onclick="crmSetFreeStatus2('${s[0]}')">${s[1]}</button>`).join('');
   const filterBar=`<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px">${dayBtns}${dateInput}<button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px;margin-${lang==='ar'?'right':'left'}:auto">⬇️ Excel</button></div>
-    <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:12px"><span style="font-size:11px;color:var(--g600)">${LX('الحالة:','Status:')}</span>${sfBtns}</div>`;
+    <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--g600)">${LX('الحالة:','Status:')}</span>${sfBtns}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px"><input type="text" id="freeSearch" placeholder="🔍 ${LX('بحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" value="${esc(crmState.freeSearch||'')}" oninput="crmSetFreeSearch(this.value)" style="flex:1;min-width:160px"><button class="crm-subbtn ${crmState.freeDup?'on':''}" onclick="crmToggleFreeDup()">🔁 ${LX('المكرّرة فقط','Duplicates only')}</button></div>`;
   // metrics over ALL date-matched (any status)
   const dm=FREE_SESSIONS.filter(crmFreeDateMatch);
+  const phoneCount={};dm.forEach(f=>{const p=String(f.phone||'').trim();if(p)phoneCount[p]=(phoneCount[p]||0)+1;});
+  const uniquePhones=Object.keys(phoneCount).length;
+  const dupSessions=dm.filter(f=>(phoneCount[String(f.phone||'').trim()]||0)>1).length;
   const confirmed=dm.filter(f=>f.status==='confirmed').length;
   const pending=dm.filter(f=>f.status!=='confirmed'&&f.status!=='cancelled').length;
   const cancelled=dm.filter(f=>f.status==='cancelled').length;
   const soon=dm.filter(f=>f.status!=='confirmed'&&f.status!=='cancelled'&&crmFreeHoursLeft(f)!==null&&crmFreeHoursLeft(f)>0&&crmFreeHoursLeft(f)<=3).length;
-  const list=FREE_SESSIONS.filter(f=>crmFreeDateMatch(f)&&crmFreeStatusMatch(f)).slice().sort((a,b)=>String(a.scheduledDate||'').localeCompare(String(b.scheduledDate||'')));
+  const list=FREE_SESSIONS.filter(f=>crmFreeDateMatch(f)&&crmFreeStatusMatch(f)&&crmFreeSearchMatch(f)&&(!crmState.freeDup||(phoneCount[String(f.phone||'').trim()]||0)>1)).slice().sort((a,b)=>String(a.scheduledDate||'').localeCompare(String(b.scheduledDate||'')));
   const head=`<div class="metric-grid">
+    <div class="metric"><div class="ml">📋 ${LX('إجمالي الحصص','Total sessions')}</div><div class="mv">${dm.length}</div></div>
+    <div class="metric"><div class="ml">👤 ${LX('أرقام فريدة','Unique numbers')}</div><div class="mv">${uniquePhones}</div></div>
+    <div class="metric"><div class="ml">🔁 ${LX('حصص مكرّرة (نفس الجوال)','Duplicate sessions')}</div><div class="mv" style="color:${dupSessions?'#92400E':'inherit'}">${dupSessions}</div></div>
     <div class="metric"><div class="ml">✅ ${LX('مؤكدة (أُعطيت)','Confirmed (given)')}</div><div class="mv">${confirmed}</div></div>
     <div class="metric"><div class="ml">⏳ ${LX('باقي (غير مؤكدة)','Remaining (unconfirmed)')}</div><div class="mv">${pending}</div></div>
     <div class="metric"><div class="ml">🚫 ${LX('ملغاة','Cancelled')}</div><div class="mv" style="color:${cancelled?'#991B1B':'inherit'}">${cancelled}</div></div>
-    <div class="metric"><div class="ml">🚨 ${LX('قريبة وغير مؤكدة','Soon & unconfirmed')}</div><div class="mv" style="color:${soon?'#DC2626':'inherit'}">${soon}</div></div>
     <div class="metric"><div class="ml">🎯 ${LX('تحوّلوا لمشتركين','Converted')}</div><div class="mv">${dm.filter(f=>f.status!=='cancelled'&&crmIsConverted(f)).length}</div></div></div>`;
   const canEdit=can('manage_complaints')||can('manage_followups');
+  const canDel=(typeof isSuperAdmin==='function'&&isSuperAdmin());
   return up+filterBar+head+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الموعد','Appointment')}</th><th>${LX('متبقٍ','Left')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('من حجزها','Booked by')}</th><th>${LX('الحالة','Status')}</th><th>${LX('النتيجة','Result')}</th><th></th></tr></thead><tbody>${list.map(f=>{
     const cancelledRow=f.status==='cancelled';
     const conv=crmIsConverted(f);
@@ -4288,7 +4304,10 @@ function crmFreeSessions(){
     const alert=(!cancelledRow&&hrs!==null&&hrs>0&&hrs<=3&&f.status!=='confirmed')?` <span class="crm-pill pill-red">⏰ ${LX('غير مؤكد','unconfirmed')}</span>`:'';
     const ctrl=canEdit?`<select onchange="crmSetFreeStatus('${esc(f.sessionId)}',this.value)" style="font-size:10px;padding:2px 4px;width:auto"><option value="scheduled" ${(f.status!=='confirmed'&&f.status!=='cancelled')?'selected':''}>${LX('غير مؤكدة','Unconfirmed')}</option><option value="confirmed" ${f.status==='confirmed'?'selected':''}>${LX('تأكيد','Confirm')}</option><option value="cancelled" ${cancelledRow?'selected':''}>${LX('إلغاء','Cancel')}</option></select>${cancelledRow?`<span style="font-size:9px;color:#991B1B;display:block">${LX('غيّرها لاستعادتها','change to restore')}</span>`:''}`:'';
     const booked=canEdit?`<select onchange="crmSetFreeBookedBy('${esc(f.sessionId)}',this.value)" style="font-size:10px;padding:2px 4px;width:auto">${crmUserOpts(f.bookedBy||'')}</select>`:esc(f.bookedBy||'—');
-    return `<tr style="${cancelledRow?'opacity:.7;background:#FEF2F2':(alert?'background:#FEF2F2':'')}"><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}</td><td>${cityLabel(f.city)}${f.zoneId!=null?' · Z'+f.zoneId:''}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').replace(' at ',' '))}</td><td style="white-space:nowrap">${left}${alert}</td><td>${esc(f.trainer||'—')}</td><td>${booked}</td><td>${stPill}</td><td>${result}</td><td style="white-space:nowrap">${ctrl}</td></tr>`;
+    const dupN=phoneCount[String(f.phone||'').trim()]||0;
+    const dupBadge=dupN>1?` <span class="crm-pill pill-amber" title="${LX('نفس الجوال متكرر','same mobile repeated')}">×${dupN}</span>`:'';
+    const delBtn=canDel?`<button class="btn btn-danger" style="font-size:10px;padding:2px 6px" onclick="crmDeleteFreeSession('${esc(f.sessionId)}')" title="${LX('حذف هذه الحصة نهائياً','Delete this session')}">🗑</button>`:'';
+    return `<tr style="${cancelledRow?'opacity:.7;background:#FEF2F2':(alert?'background:#FEF2F2':'')}"><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}${dupBadge}</td><td>${cityLabel(f.city)}${f.zoneId!=null?' · Z'+f.zoneId:''}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').replace(' at ',' '))}</td><td style="white-space:nowrap">${left}${alert}</td><td>${esc(f.trainer||'—')}</td><td>${booked}</td><td>${stPill}</td><td>${result}</td><td style="white-space:nowrap;display:flex;gap:4px;align-items:center">${ctrl}${delBtn}</td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 function crmSetFreeStatus(sid,status){
