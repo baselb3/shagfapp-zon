@@ -3501,7 +3501,8 @@ let CRM_CFG={
   complaintStatuses:['مفتوح','قيد المعالجة','محلول'],
   complaintPriorities:['عادية','عالية','عاجلة'],
   responsibles:[],
-  leadStatuses:['لا رد','تم الحجز','سيتم الحجز قريباً','الوقت غير مناسب','خارج مناطق التغطية','السعر مرتفع','غير مهتم']
+  leadStatuses:['لا رد','تم الحجز','سيتم الحجز قريباً','الوقت غير مناسب','خارج مناطق التغطية','السعر مرتفع','غير مهتم'],
+  addonPackages:['Minute Nutrition'] // باقات تُعطى مع الاشتراك ولا تُحتسب اشتراكاً/جديد/تجديد
 };
 let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:''};
 let crmHidden={};      // per-metric privacy hide state
@@ -3525,7 +3526,7 @@ function crmLastTxn(c){return (c.txns||[]).slice().sort((a,b)=>String(b.pdate||'
 // Latest non-expired transaction per category = the customer's active subscriptions
 function crmActiveSubs(c){
   const byCat={};
-  (c.txns||[]).forEach(t=>{if((t.paid||0)<=0||crmIsTrial(t)||t.refunded)return;const k=t.cat||t.item||'?';if(!byCat[k]||String(crmEnd(t)||'')>String(crmEnd(byCat[k])||''))byCat[k]=t;});
+  (c.txns||[]).forEach(t=>{if((t.paid||0)<=0||crmIsTrial(t)||crmIsAddon(t)||t.refunded)return;const k=t.cat||t.item||'?';if(!byCat[k]||String(crmEnd(t)||'')>String(crmEnd(byCat[k])||''))byCat[k]=t;});
   return Object.values(byCat).filter(t=>{const dl=crmDaysLeft(crmEnd(t));return dl!==null&&dl>=0;});
 }
 function crmAllTxns(){const a=[];CUSTOMERS.forEach(c=>(c.txns||[]).forEach(t=>a.push(Object.assign({phone:c.phone,name:c.name},t))));return a;}
@@ -3533,7 +3534,9 @@ function crmTxnDate(t){const s=t.pdate||t.invoiceDate||t.expiry||'';const day=St
 // A "Free trial (one session)" is a free session, NOT a subscription —
 // it must not count for the customer nor as their "new".
 function crmIsTrial(t){return /trial/i.test(t.item||t.cat||'')||/تجربة/.test(t.item||'');}
-function crmRealTxns(c){return (c.txns||[]).filter(t=>!crmIsTrial(t));}
+// باقات إضافية تُعطى مع الاشتراك (مثل Minute Nutrition) — لا تُحتسب اشتراكاً ولا جديد/تجديد
+function crmIsAddon(t){const s=String(t.item||t.cat||'').toLowerCase();return (CRM_CFG.addonPackages||[]).some(a=>{a=String(a||'').trim().toLowerCase();return a&&s.indexOf(a)>=0;});}
+function crmRealTxns(c){return (c.txns||[]).filter(t=>!crmIsTrial(t)&&!crmIsAddon(t));}
 function crmHasReal(c){return crmRealTxns(c).length>0;}
 // New vs Renewal is DERIVED from the customer's own real (paid, non-trial)
 // history (earliest = new), NOT from the file's Subscription Type column.
@@ -4028,16 +4031,24 @@ function crmCustomerCard(c){
     const stp=isActive?`<span class="crm-pill pill-green">${LX('نشطة','Active')}</span>`:(dl!==null&&dl<0?`<span class="crm-pill pill-gray">${LX('منتهية','Expired')}</span>`:`<span class="crm-pill pill-gray">${LX('سابقة','Past')}</span>`);
     const editBtn=canEdit?`<button class="btn" style="font-size:10px;padding:1px 6px" onclick="crmEditSub('${esc(c.phone)}','${esc(t.inv)}')" title="${LX('تعديل','Edit')}">✏️</button>`:'';
     const refundBtn=canEdit?`<button class="btn ${t.refunded?'':'btn-danger'}" style="font-size:10px;padding:1px 6px" onclick="crmRefundForm('${esc(c.phone)}','${esc(t.inv)}')" title="${t.refunded?LX('تعديل الاسترجاع','Edit refund'):LX('تسجيل استرجاع','Record refund')}">↩️</button>`:'';
+    const delTxnBtn=can('delete_customers')?`<button class="btn btn-danger" style="font-size:10px;padding:1px 6px" onclick="crmDeleteTxn('${esc(c.phone)}','${esc(t.inv)}')" title="${LX('حذف الباقة (يُعاد احتساب جديد/تجديد)','Delete package (recomputes new/renewal)')}">🗑</button>`:'';
     const edited=t.startOverride||t.endOverride?` <span class="crm-pill pill-blue">${LX('مُعدّل','Edited')}</span>`:'';
     const refundPill=t.refunded?` <span class="crm-pill pill-red">↩️ ${LX('مُسترجع','Refunded')}${t.refundAmount?': '+crmMoney(t.refundAmount)+' '+LX('ريال','SAR'):''}</span>`:'';
     const refundLine=t.refunded&&(t.refundNote||t.refundAt)?`<br><span style="font-size:10px;color:#B91C1C">${esc(t.refundNote||'')}${t.refundAt?` · ${esc(t.refundAt)}`:''}</span>`:'';
-    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;border:1px solid var(--g200);border-radius:6px;padding:6px 9px;font-size:12px;${t.refunded?'opacity:.75;background:#FEF2F2':''}"><div><b>${LX('باقة','Pkg')} ${i+1}:</b> ${esc(t.item||t.cat)} — <b>${t.sessions||0} ${LX('حصة','sess')}</b> ${t.refunded?'':stp}${refundPill}${edited}<br><span style="font-size:10px;color:var(--g400)">${esc(String(crmStart(t)||'').slice(0,10))} ← ${esc(crmEnd(t)||'—')} · ${esc(t.trainer||'—')} · ${crmMoney(t.paid)}${t.remaining?` · ${LX('باقٍ','left')} ${t.remaining} ${LX('حصة','sess')}`:''}</span>${refundLine}</div><div style="display:flex;gap:4px;flex-shrink:0">${editBtn}${refundBtn}</div></div>`;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;border:1px solid var(--g200);border-radius:6px;padding:6px 9px;font-size:12px;${t.refunded?'opacity:.75;background:#FEF2F2':''}"><div><b>${LX('باقة','Pkg')} ${i+1}:</b> ${esc(t.item||t.cat)} — <b>${t.sessions||0} ${LX('حصة','sess')}</b> ${t.refunded?'':stp}${refundPill}${edited}<br><span style="font-size:10px;color:var(--g400)">${esc(String(crmStart(t)||'').slice(0,10))} ← ${esc(crmEnd(t)||'—')} · ${esc(t.trainer||'—')} · ${crmMoney(t.paid)}${t.remaining?` · ${LX('باقٍ','left')} ${t.remaining} ${LX('حصة','sess')}`:''}</span>${refundLine}</div><div style="display:flex;gap:4px;flex-shrink:0">${editBtn}${refundBtn}${delTxnBtn}</div></div>`;
   }).join(''):`<div style="font-size:12px;color:var(--g400)">${LX('لا باقات','No packages')}</div>`;
   const refundTotal=real.reduce((s,t)=>s+(t.refunded?(t.refundAmount||0):0),0);
   const totalLine=`${LX('إجمالي','Total')} ${crmMoney(paid)}`+(refundTotal?` · <span style="color:#B91C1C">${LX('مُسترجع','Refunded')} ${crmMoney(refundTotal)}</span> · ${LX('صافي','Net')} ${crmMoney(paid-refundTotal)}`:'');
   const mgr=(typeof isSuperAdmin==='function'&&isSuperAdmin());
   const mgrBtns=mgr?`<div style="display:flex;gap:4px;flex-shrink:0"><button class="btn" style="font-size:11px;padding:2px 7px" onclick="crmEditCustomerZone('${esc(c.phone)}')" title="${LX('تعيين المدينة/الزون','Set city/zone')}">📍</button><button class="btn btn-danger" style="font-size:11px;padding:2px 7px" onclick="crmDeleteCustomer('${esc(c.phone)}')" title="${LX('حذف العميل نهائياً','Delete customer')}">✕</button></div>`:'';
   return `<div class="crm-card"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><div><span style="font-weight:800">${esc(c.name||'—')}</span> <span dir=ltr style="color:var(--g600);font-size:12px">${esc(c.phone)}</span><div style="font-size:11px;color:var(--g400);margin-top:2px">${cityLabel(c.city)}${c.zoneId!=null?' · '+LX('زون','Zone')+' '+c.zoneId:''} · <b style="color:var(--primary)">${real.length} ${LX('باقة','pkgs')}</b> · <b style="color:var(--primary)">${totalSess} ${LX('حصة','sess')}</b> (${usedSess} ${LX('مستخدمة','used')}) · ${totalLine}</div></div>${mgrBtns}</div><div style="display:flex;flex-direction:column;gap:6px">${pkgs}</div></div>`;
+}
+function crmDeleteTxn(phone,inv){
+  if(!can('delete_customers')){toast(LX('لا صلاحية','No permission'));return;}
+  const c=CUSTOMERS.find(x=>x.phone===phone);if(!c)return;
+  const t=(c.txns||[]).find(x=>x.inv===inv);if(!t)return;
+  if(!confirm(LX('حذف باقة «','Delete package “')+(t.item||t.cat||'')+LX('»؟ سيُعاد احتساب جديد/تجديد للعميل تلقائياً.','”? New/renewal for this customer will be recomputed automatically.')))return;
+  mutateListDoc('customers',cur=>cur.map(x=>x.phone!==phone?x:Object.assign({},x,{txns:(x.txns||[]).filter(tt=>tt.inv!==inv)}))).then(n=>{CUSTOMERS=n;toast('🗑 '+LX('حُذفت الباقة','Package deleted'));try{logHistory(LX('حذف باقة','Delete package'),phone+' / '+inv,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmDeleteCustomer(phone){
   if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Manager only'));return;}
@@ -4710,7 +4721,8 @@ function crmSettings(){
     ${block('complaintStatuses',LX('مراحل الشكوى (كيف تمشي)','Complaint stages (workflow)'),LX('بالترتيب — آخر مرحلة تُعتبر «تم الحل». زر ↻ ينقل للمرحلة التالية','In order — last stage = “resolved”. The ↻ button moves to the next stage'))}
     ${block('complaintPriorities',LX('أولويات الشكوى','Complaint priorities'),'')}
     ${block('responsibles',LX('المسؤولون عن الشكاوى','Complaint responsibles'),LX('تظهر في خانة «محوّلة إلى» داخل الشكوى','Shown in the “Assigned to” field'))}
-    ${block('leadStatuses',LX('حالات العملاء الجدد (Leads)','Lead statuses'),LX('قائمة اختيار الحالة في متابعة العملاء الجدد','Status options in lead follow-up'))}`:'';
+    ${block('leadStatuses',LX('حالات العملاء الجدد (Leads)','Lead statuses'),LX('قائمة اختيار الحالة في متابعة العملاء الجدد','Status options in lead follow-up'))}
+    ${block('addonPackages',LX('باقات لا تُحتسب اشتراكاً (تُعطى مع الاشتراك)','Add-on packages (not counted as a subscription)'),LX('مثل Minute Nutrition — لا تُحسب جديد ولا تجديد ولا اشتراك نشط. أي باقة يحتوي اسمها على هذه الكلمات تُستبعد من حسابات المبيعات.','e.g. Minute Nutrition — not counted as new/renewal or an active subscription. Any package whose name contains these words is excluded from sales counts.'))}`:'';
   const users=can('manage_users')?`<div class="crm-card"><h3>👥 ${LX('إدارة المستخدمين والصلاحيات','Users & permissions')}</h3>
       <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('أضف مستخدمين وحدّد صلاحيات كل واحد بدقة — صلاحيات الزون والـ CRM من نفس المكان','Add users and set each one’s permissions precisely — both Zone and CRM permissions from one place')}</div>
       <div id="usersListEl"></div><div id="adminUsersBtns"></div></div>`:'';
