@@ -732,6 +732,9 @@ const ALL_PERMISSIONS = [
   {key:'upload_data',    ar:'رفع ملفات البيانات (إكسل)',  en:'Upload Data Files'},
   {key:'manage_leads',   ar:'إدارة العملاء الجدد (Leads)', en:'Manage Leads'},
   {key:'edit_lead_zone', ar:'تعديل مدينة/زون العملاء الجدد', en:'Edit Lead City/Zone'},
+  {key:'view_my_dashboard',ar:'لوحتي (داش بورد الموظف)',    en:'My Dashboard'},
+  {key:'export_data',    ar:'تصدير/تحميل Excel',           en:'Export / Download Excel'},
+  {key:'view_customer_lists',ar:'عرض قوائم العملاء التفصيلية',en:'View Detailed Customer Lists'},
 ];
 
 // Default users - admin password + one viewer
@@ -3494,6 +3497,7 @@ let WAITLIST=[];
 let LEADS=[];        // app registrations funnel (customers.csv): each tracked through contact->booking->subscribe
 let CRM_UPLOADS=[];  // upload audit log: [{id,page,by,at,total,added,dupe,skipped,note}]
 let CRM_NOTIFS={};   // { username: [ {id,text,from,at,read,sec,sub} ] }
+let CRM_DASH={};     // { username: { widgets:[key,...] } } — each employee's chosen dashboard widgets
 let CRM_SVC={complaints:[],suggestions:[],desk:[],followups:[]};
 let CRM_CFG={
   noRenewReasons:['السعر','غيّر النادي','ظروف صحية','انتقل لمدينة أخرى','غير راضٍ عن الخدمة','تعذّر التواصل'],
@@ -3609,6 +3613,10 @@ async function loadCrmData(){
     const ld=await db.collection('app').doc('crm_leads').get();
     LEADS=ld.exists?(ld.data().list||[]):[];
   }catch(e){console.error('load crm_leads',e);}
+  try{
+    const dh=await db.collection('app').doc('crm_dashboards').get();
+    CRM_DASH=dh.exists?(dh.data().map||{}):{};
+  }catch(e){console.error('load crm_dashboards',e);}
 }
 // record an upload event to the audit log
 function crmLogUpload(page,info){
@@ -3744,6 +3752,7 @@ function switchMode(mode){
 function crmNavDefs(){
   const d=[];
   if(can('view_dashboard'))d.push({key:'dash',label:LX('📊 داش بورد','📊 Dashboard')});
+  if(can('view_my_dashboard'))d.push({key:'mydash',label:LX('📊 لوحتي','📊 My Dashboard')});
   if(can('view_crm'))d.push({key:'sales',label:LX('🛒 مبيعات','🛒 Sales'),subs:[['new',LX('جديد','New')],['renew',LX('تجديد','Renewal')],['customers',LX('كل العملاء','All Customers')],['followup',LX('المتابعة','Follow-up')]]});
   if(can('manage_complaints')||can('manage_followups')||can('manage_leads')){
     const ssubs=[];
@@ -3787,6 +3796,7 @@ async function crmOnLogin(){
 function crmRender(){
   const b=document.getElementById('crmBody');if(!b)return;
   if(crmState.sec==='dash')b.innerHTML=can('view_dashboard')?crmDashboard():`<div class="crm-empty">${LX('ليس لديك صلاحية عرض الداش بورد','You don’t have dashboard permission')}</div>`;
+  else if(crmState.sec==='mydash')b.innerHTML=can('view_my_dashboard')?crmMyDash():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
   else if(crmState.sec==='sales'){
     if(crmState.sub==='customers')b.innerHTML=crmCustomers();
     else if(crmState.sub==='followup')b.innerHTML=crmFollowup();
@@ -3806,7 +3816,9 @@ function crmExportXlsx(rows,filename){
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'CRM');
   XLSX.writeFile(wb,filename);toast(LX('📥 تم التصدير','📥 Exported'));
 }
+function crmExpBtn(label,style){return can('export_data')?`<button class="btn" onclick="crmExportCurrent()" style="${style||'font-size:11px;padding:3px 10px'}">${label||'⬇️ Excel'}</button>`:'';}
 function crmExportCurrent(){
+  if(!can('export_data')){toast(LX('ليس لديك صلاحية تصدير البيانات','You don’t have export permission'));return;}
   let rows=[],fn='crm.xlsx';const sec=crmState.sec,sub=crmState.sub;
   if(sec==='sales'&&sub==='customers'){
     rows=[[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('المدينة','City'),LX('الزون','Zone'),LX('الباقة','Package'),LX('الحصص','Sessions'),LX('المستخدمة','Used'),LX('المتبقية','Remaining'),LX('البداية','Start'),LX('النهاية','End'),LX('مقدم الخدمة','Provider'),LX('المدفوع','Paid')]];
@@ -3879,6 +3891,72 @@ function crmDataYears(){
 function crmTodayMidnight(){const n=new Date();return new Date(n.getFullYear(),n.getMonth(),n.getDate());}
 function crmFollowDue(f){if(!f.followDate)return false;const d=new Date(String(f.followDate).slice(0,10)+'T00:00:00');return !isNaN(d)&&d<=new Date();}
 
+// ===================== MY DASHBOARD (per-employee, customizable) =====================
+// match a stored author name/username against the current user (logs store display names)
+function crmMe(){return currentUser?[currentUser.name_ar,currentUser.name_en,currentUser.username].filter(Boolean).map(s=>String(s).trim()):[];}
+function crmIsMine(name){if(!name)return false;const t=String(name).trim();return crmMe().some(n=>n&&n===t);}
+function crmInMonth(t){const ms=crmTxnDate(t);if(!ms)return false;const d=new Date(ms),n=new Date();return d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth();}
+function crmWidgetAllowed(w){return !w.perm||!w.perm.length||w.perm.some(p=>can(p));}
+function crmDashWidgets(){
+  const F=FREE_SESSIONS||[], L=LEADS||[], C=CRM_SVC.complaints||[];
+  return [
+   // 🙋 شخصية — شغل الموظف نفسه (تُفلتر على اسمه)
+   {key:'mine_free_booked',group:'mine',ic:'📅',ar:'فري سشن حجزتها',en:'Free sessions I booked',perm:[],compute:()=>({v:F.filter(f=>crmIsMine(f.bookedBy)).length})},
+   {key:'mine_free_called',group:'mine',ic:'📞',ar:'فري سشن تابعتها',en:'Free sessions I followed',perm:[],compute:()=>({v:F.filter(f=>crmIsMine(f.calledBy)||(f.followLog||[]).some(e=>crmIsMine(e.by))).length})},
+   {key:'mine_leads_contacted',group:'mine',ic:'🆕',ar:'Leads اتصلت عليها',en:'Leads I contacted',perm:[],compute:()=>({v:L.filter(l=>(l.callLog||[]).some(e=>crmIsMine(e.by))).length})},
+   {key:'mine_leads_due',group:'mine',ic:'⏰',ar:'متابعات Leads عليّ اليوم',en:'My lead follow-ups due',perm:[],color:'#DC2626',compute:()=>({v:L.filter(l=>(l.callLog||[]).some(e=>crmIsMine(e.by))&&crmLeadDue(l)&&crmLeadState(l)!=='subscribed').length})},
+   {key:'mine_complaints',group:'mine',ic:'🎯',ar:'شكاوى محوّلة لي',en:'Complaints assigned to me',perm:[],compute:()=>{const a=C.filter(x=>crmIsMine(x.assignedTo));const op=a.filter(x=>!crmIsResolved(x)).length;return {v:a.length,sub:LX(op+' مفتوحة',op+' open')};}},
+   // 🏢 الشركة — محكومة بصلاحيات
+   {key:'co_free_total',group:'company',ic:'🎟',ar:'إجمالي الفري سشن',en:'Total free sessions',perm:['manage_complaints','manage_followups'],compute:()=>({v:F.length})},
+   {key:'co_free_confirmed',group:'company',ic:'✅',ar:'فري سشن مؤكدة',en:'Confirmed free sessions',perm:['manage_complaints','manage_followups'],color:'#166534',compute:()=>({v:F.filter(f=>f.status==='confirmed').length})},
+   {key:'co_free_pending',group:'company',ic:'⏳',ar:'فري سشن غير مؤكدة',en:'Unconfirmed free sessions',perm:['manage_complaints','manage_followups'],color:'#D97706',compute:()=>({v:F.filter(f=>f.status!=='confirmed'&&f.status!=='cancelled').length})},
+   {key:'co_free_cancelled',group:'company',ic:'🚫',ar:'فري سشن ملغاة',en:'Cancelled free sessions',perm:['manage_complaints','manage_followups'],compute:()=>({v:F.filter(f=>f.status==='cancelled').length})},
+   {key:'co_leads_total',group:'company',ic:'👥',ar:'إجمالي Leads',en:'Total leads',perm:['manage_leads'],compute:()=>({v:L.length})},
+   {key:'co_leads_needcall',group:'company',ic:'🆕',ar:'Leads محتاجة اتصال',en:'Leads needing a call',perm:['manage_leads'],color:'#92400E',compute:()=>({v:L.filter(l=>crmLeadState(l)==='uncontacted').length})},
+   {key:'co_leads_today',group:'company',ic:'📞',ar:'متابعة Leads اليوم',en:'Lead follow-ups today',perm:['manage_leads'],color:'#DC2626',compute:()=>({v:L.filter(l=>crmLeadDue(l)&&crmLeadState(l)!=='subscribed').length})},
+   {key:'co_leads_booked',group:'company',ic:'✅',ar:'Leads حجزوا',en:'Leads booked',perm:['manage_leads'],compute:()=>({v:L.filter(l=>{const s=crmLeadState(l);return s==='booked'||s==='attended';}).length})},
+   {key:'co_leads_subscribed',group:'company',ic:'💳',ar:'Leads اشتركوا',en:'Leads subscribed',perm:['manage_leads'],color:'#166534',compute:()=>({v:L.filter(l=>crmLeadState(l)==='subscribed').length})},
+   {key:'co_complaints_open',group:'company',ic:'⚠️',ar:'شكاوى مفتوحة',en:'Open complaints',perm:['manage_complaints'],color:'#DC2626',compute:()=>({v:C.filter(x=>!crmIsResolved(x)).length})},
+   {key:'co_complaints_total',group:'company',ic:'📋',ar:'إجمالي الشكاوى',en:'Total complaints',perm:['manage_complaints'],compute:()=>({v:C.length})},
+   {key:'co_waitlist',group:'company',ic:'🕓',ar:'قائمة الانتظار',en:'Waiting list',perm:['manage_complaints','manage_followups'],compute:()=>({v:(WAITLIST||[]).length})},
+   // 💰 مبيعات — محكومة بصلاحية «داش بورد المبيعات»
+   {key:'co_active_subs',group:'company',ic:'🔵',ar:'اشتراكات نشطة',en:'Active subscriptions',perm:['view_dashboard'],compute:()=>{let n=0;CUSTOMERS.forEach(c=>{n+=crmActiveSubs(c).length;});return {v:n};}},
+   {key:'co_expiring_month',group:'company',ic:'🔔',ar:'اشتراكات تنتهي خلال شهر',en:'Subs expiring within a month',perm:['view_dashboard'],color:'#D97706',compute:()=>{let n=0;CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{const dl=crmDaysLeft(crmEnd(t));if(dl!==null&&dl>=0&&dl<=31)n++;}));return {v:n};}},
+   {key:'co_new_month',group:'company',ic:'🆕',ar:'اشتراكات جديدة هذا الشهر',en:'New subscriptions this month',perm:['view_dashboard'],compute:()=>({v:crmTxnsWithType().filter(t=>t._dtype==='New'&&crmInMonth(t)).length})},
+   {key:'co_renew_month',group:'company',ic:'🔁',ar:'تجديدات هذا الشهر',en:'Renewals this month',perm:['view_dashboard'],compute:()=>({v:crmTxnsWithType().filter(t=>t._dtype==='Renewal'&&crmInMonth(t)).length})},
+   {key:'co_revenue_month',group:'company',ic:'💰',ar:'إيراد هذا الشهر (ريال)',en:'Revenue this month (SAR)',perm:['view_dashboard'],color:'#166534',compute:()=>({v:crmMoney(crmTxnsWithType().filter(t=>crmInMonth(t)).reduce((s,t)=>s+((t.paid||0)-(t.refunded?(t.refundAmount||0):0)),0))})},
+  ];
+}
+function crmMyDashDefault(){const all=crmDashWidgets().filter(crmWidgetAllowed);let s=all.filter(w=>w.group==='mine').slice(0,4).map(w=>w.key);if(!s.length)s=all.slice(0,4).map(w=>w.key);return s;}
+function crmMyDash(){
+  const uname=currentUser?currentUser.username:'';
+  const all=crmDashWidgets();const byKey={};all.forEach(w=>byKey[w.key]=w);
+  const saved=(CRM_DASH[uname]||{}).widgets;
+  let sel=Array.isArray(saved)?saved.slice():crmMyDashDefault();
+  const cards=sel.map(k=>byKey[k]).filter(w=>w&&crmWidgetAllowed(w));
+  const grid=cards.length?`<div class="metric-grid">${cards.map(w=>{let r={};try{r=w.compute()||{};}catch(e){r={v:'—'};}return `<div class="metric"><div class="ml">${w.ic||''} ${LX(w.ar,w.en)}</div><div class="mv"${r.color?` style="color:${r.color}"`:''}>${r.v}</div>${r.sub?`<div style="font-size:11px;color:var(--g400);margin-top:3px">${r.sub}</div>`:''}</div>`;}).join('')}</div>`:`<div class="crm-empty">${LX('لوحتك فارغة — اضغط «تخصيص» واختر الأرقام اللي تبغاها','Your board is empty — click “Customize” and pick the numbers you want')}</div>`;
+  const greet=currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'';
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px"><h3 style="margin:0;font-size:16px">📊 ${LX('لوحتي','My Dashboard')}${greet?` — ${esc(greet)}`:''}</h3><button class="btn btn-primary" onclick="crmDashCustomize()">⚙️ ${LX('تخصيص','Customize')}</button></div>
+   <div style="font-size:11px;color:var(--g400);margin-bottom:12px">${LX('اختر الأرقام اللي تهمّك ورتّبها على ذوقك — تشوف فقط الأرقام المسموح لك بها.','Pick the numbers that matter to you and arrange them — you only see numbers you’re allowed to view.')}</div>${grid}`;
+}
+function crmDashCustomize(){
+  const uname=currentUser?currentUser.username:'';
+  const all=crmDashWidgets().filter(crmWidgetAllowed);
+  const saved=(CRM_DASH[uname]||{}).widgets;
+  const sel=new Set(Array.isArray(saved)?saved:crmMyDashDefault());
+  const grp=(g,title)=>{const items=all.filter(w=>w.group===g);if(!items.length)return '';return `<div style="font-weight:700;font-size:12px;margin:10px 0 4px">${title}</div>`+items.map(w=>`<label style="display:flex;align-items:center;gap:6px;padding:5px 0;font-size:13px;cursor:pointer;border-bottom:1px solid var(--g100)"><input type="checkbox" class="dash-cb" value="${w.key}" ${sel.has(w.key)?'checked':''} style="width:auto"/> ${w.ic||''} ${LX(w.ar,w.en)}</label>`).join('');};
+  openModal(`<h3>⚙️ ${LX('تخصيص لوحتي','Customize my dashboard')}</h3>
+    <div style="font-size:11px;color:var(--g400);margin-bottom:6px">${LX('اختر الأرقام اللي تبغاها تظهر في لوحتك','Choose the numbers to show on your board')}</div>
+    <div style="max-height:50vh;overflow:auto;border:1px solid var(--g200);border-radius:6px;padding:8px">${all.length?grp('mine',LX('🙋 أرقامي الشخصية','🙋 My own numbers'))+grp('company',LX('🏢 أرقام الشركة (المسموح بها)','🏢 Company numbers (allowed)')):`<div style="font-size:12px;color:var(--g400)">${LX('لا توجد أرقام متاحة لك بعد — راجع الأدمن لإعطائك صلاحيات','No numbers available to you yet — ask the admin to grant permissions')}</div>`}</div>
+    <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-primary" style="flex:1" onclick="crmDashSave()">💾 ${LX('حفظ','Save')}</button><button class="btn" style="flex:1" onclick="closeModal()">${LX('إلغاء','Cancel')}</button></div>`);
+}
+function crmDashSave(){
+  const uname=currentUser?currentUser.username:'';if(!uname){closeModal();return;}
+  const order=crmDashWidgets().map(w=>w.key);
+  const picked=Array.from(document.querySelectorAll('.dash-cb')).filter(c=>c.checked).map(c=>c.value);
+  const widgets=order.filter(k=>picked.indexOf(k)>=0);
+  mutateMapDoc('crm_dashboards',m=>{m[uname]=Object.assign({},m[uname],{widgets});return m;}).then(n=>{CRM_DASH=n;closeModal();toast('💾 '+LX('تم حفظ لوحتك','Your board is saved'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
 function crmDashboard(){
   if(!CUSTOMERS.length&&!FREE_SESSIONS.length)return crmDashPeriodBar()+`<div class="crm-empty">${LX('لا توجد بيانات بعد — ارفع ملف المبيعات من «مبيعات» والحصص من «خدمة العملاء»','No data yet — upload the sales file from “Sales” and sessions from “Customer Service”')}</div>`;
   const ptx=crmTxnsWithType().filter(crmInPeriod);
@@ -4002,12 +4080,13 @@ function crmSalesList(type){
   const cntLabel=type==='New'?LX('عملاء جدد','New'):LX('تجديدات','Renewals');
   const searchRow=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><input type="text" id="salesSearch" placeholder="🔍 ${LX('بحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" value="${esc(crmState.salesSearch||'')}" oninput="crmSetSalesSearch(this.value)" style="flex:1;min-width:160px"><span class="crm-pill pill-blue" style="font-size:12px;padding:4px 10px">${cntLabel}: ${rows.length}</span></div>
     <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--g600)">${LX('الفترة:','Period:')}</span>${spBtns}</div>`;
-  const bar=searchRow+`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px">${sortSel}</div><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px">⬇️ ${LX('تصدير Excel','Export Excel')}</button></div>`;
+  const bar=searchRow+`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px">${sortSel}</div>${crmExpBtn('⬇️ '+LX('تصدير Excel','Export Excel'))}</div>`;
   if(!rows.length)return up+bar+`<div class="crm-empty">${LX('لا توجد نتائج ضمن الفلتر/البحث','No results for this filter/search')}</div>`;
   return up+bar+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('الباقة','Package')}</th><th>${LX('الحصص','Sessions')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('المدفوع','Paid')}</th><th>${LX('تاريخ الشراء','Purchase date')}</th><th>${LX('ينتهي','Expires')}</th></tr></thead><tbody>${rows.slice(0,300).map(t=>`<tr><td>${esc(t.name)}</td><td dir=ltr>${esc(t.phone)}</td><td>${cityLabel(t.city)}</td><td>${t.zoneId!=null?'Z'+t.zoneId:'—'}</td><td>${esc(t.item||t.cat)}</td><td>${t.sessions||0}</td><td>${esc(t.trainer||'—')}</td><td>${crmMoney(t.paid)}</td><td style="white-space:nowrap">${esc(String(t.pdate||'').slice(0,10)||'—')}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td></tr>`).join('')}</tbody></table>${rows.length>300?`<div class="crm-empty">${LX('عرض ٣٠٠ من','Showing 300 of')} ${rows.length} — ${LX('استخدم الترتيب/التصدير','use sort/export')}</div>`:''}</div>`;
 }
 function crmCustomers(){
-  const head=`<div style="display:flex;gap:8px;margin-bottom:12px"><input type="text" id="crmCustSearch" placeholder="🔍 ${LX('ابحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" oninput="crmFilterCust(this.value)" value="${esc(window._crmSearch||'')}" style="flex:1"><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px;white-space:nowrap">⬇️ Excel</button></div><div id="crmCustList">${crmCustListHtml()}</div>`;
+  if(!can('view_customer_lists'))return `<div class="crm-empty">${LX('ليس لديك صلاحية عرض قوائم العملاء التفصيلية — راجع الأدمن','You don’t have permission to view detailed customer lists — ask the admin')}</div>`;
+  const head=`<div style="display:flex;gap:8px;margin-bottom:12px"><input type="text" id="crmCustSearch" placeholder="🔍 ${LX('ابحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" oninput="crmFilterCust(this.value)" value="${esc(window._crmSearch||'')}" style="flex:1">${crmExpBtn('⬇️ Excel','font-size:11px;padding:3px 10px;white-space:nowrap')}</div><div id="crmCustList">${crmCustListHtml()}</div>`;
   return head;
 }
 function crmFilterCust(q){window._crmSearch=q;const el=document.getElementById('crmCustList');if(el)el.innerHTML=crmCustListHtml();}
@@ -4101,7 +4180,7 @@ function crmService(kind){
   const labels=kind==='complaints'?LX('الشكاوى','Complaints'):LX('الاقتراحات','Suggestions');
   const arr=(CRM_SVC[kind]||[]).slice().sort((a,b)=>b.id-a.id);
   const isC=kind==='complaints';
-  const add=(can('manage_complaints')?`<button class="btn btn-primary" onclick="crmServiceForm('${kind}')">➕ ${LX('إضافة','Add')}</button>`:'')+(isC?` <button class="btn" onclick="crmExportCurrent()" style="font-size:11px">⬇️ Excel</button>`:'');
+  const add=(can('manage_complaints')?`<button class="btn btn-primary" onclick="crmServiceForm('${kind}')">➕ ${LX('إضافة','Add')}</button>`:'')+(isC?' '+crmExpBtn('⬇️ Excel','font-size:11px'):'');
   let head=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0;font-size:15px">${labels}</h3><div style="display:flex;gap:6px">${add}</div></div>`;
   if(isC)head+=crmComplaintStats();
   if(!arr.length)return head+`<div class="crm-empty">${LX('لا يوجد بعد — اضغط «إضافة»','Nothing yet — click “Add”')}</div>`;
@@ -4348,7 +4427,7 @@ function crmFreeSessions(){
   // status filter chips
   const SF=[['',LX('النشطة','Active')],['confirmed',LX('مؤكدة','Confirmed')],['scheduled',LX('غير مؤكدة','Unconfirmed')],['cancelled',LX('ملغاة','Cancelled')],['all',LX('الكل','All')]];
   const sfBtns=SF.map(s=>`<button class="crm-subbtn ${ (crmState.freeStatus||'')===s[0]?'on':''}" onclick="crmSetFreeStatus2('${s[0]}')">${s[1]}</button>`).join('');
-  const filterBar=`<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px">${dayBtns}${dateInput}<button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px;margin-${lang==='ar'?'right':'left'}:auto">⬇️ Excel</button></div>
+  const filterBar=`<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px">${dayBtns}${dateInput}${crmExpBtn('⬇️ Excel','font-size:11px;padding:3px 10px;margin-'+(lang==='ar'?'right':'left')+':auto')}</div>
     <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--g600)">${LX('الحالة:','Status:')}</span>${sfBtns}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px"><input type="text" id="freeSearch" placeholder="🔍 ${LX('بحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" value="${esc(crmState.freeSearch||'')}" oninput="crmSetFreeSearch(this.value)" style="flex:1;min-width:160px"><button class="crm-subbtn ${crmState.freeDup?'on':''}" onclick="crmToggleFreeDup()">🔁 ${LX('المكرّرة فقط','Duplicates only')}</button></div>`;
   // metrics over ALL date-matched (any status)
@@ -4662,7 +4741,7 @@ function crmLeads(){
   const fil=crmState.leadFilter||'';
   if(fil)list=list.filter(l=>fil==='duetoday'?(crmLeadDue(l)&&l._s!=='subscribed'):l._s===fil);
   list=list.sort((a,b)=>String(b.createdOn||'').localeCompare(String(a.createdOn||'')));
-  const bar=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><input type="text" id="leadSearch" placeholder="🔍 ${LX('بحث بالاسم أو الجوال...','Search name/mobile...')}" value="${esc(crmState.leadSearch||'')}" oninput="crmSetLeadSearch(this.value)" style="flex:1;min-width:160px"><button class="btn" onclick="crmExportCurrent()" style="font-size:11px;padding:3px 10px">⬇️ Excel</button></div>
+  const bar=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><input type="text" id="leadSearch" placeholder="🔍 ${LX('بحث بالاسم أو الجوال...','Search name/mobile...')}" value="${esc(crmState.leadSearch||'')}" oninput="crmSetLeadSearch(this.value)" style="flex:1;min-width:160px">${crmExpBtn('⬇️ Excel')}</div>
     <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:12px">${flBtns}</div>`;
   const stPill=l=>{const m={subscribed:['pill-green',LX('اشترك','Subscribed')],attended:['pill-green',LX('حضر الحصة','Attended')],booked:['pill-blue',LX('حجز حصة','Booked')],noshow:['pill-amber',LX('حجز وما حضر','No-show')],noanswer:['pill-amber',LX('لا رد','No answer')],closed:['pill-gray',LX('مغلق','Closed')],duetoday:['pill-red',LX('متابعة اليوم','Follow today')],uncontacted:['pill-gray',LX('جديد','New')],inprogress:['pill-blue',LX('قيد المتابعة','In progress')]};const v=m[l._s]||m.uncontacted;return `<span class="crm-pill ${v[0]}">${v[1]}</span>`;};
   const rows=list.slice(0,300).map(l=>{const log=l.callLog||[];const last=log[log.length-1];const due=crmLeadDue(l);return `<tr style="${due&&l._s!=='subscribed'?'background:#FEF2F2':''}"><td>${esc(l.name||'—')}</td><td dir=ltr>${esc(l.phone)}</td><td>${esc(l.cityName||cityLabel(l.city))}${l.zoneId!=null?' · Z'+l.zoneId:''}${l.geoEdited?' ✏️':''}${can('edit_lead_zone')?` <button class="btn" style="font-size:9px;padding:0px 5px;vertical-align:middle" onclick="crmLeadGeoForm('${esc(l.leadId)}')" title="${LX('تعديل المدينة/الزون','Edit city/zone')}">✏️</button>`:''}</td><td style="text-align:center">${(crmAge(l.dob)!=null)?crmAge(l.dob):'—'}</td><td style="font-size:11px;max-width:140px">${esc(l.goal||'—')}</td><td>${stPill(l)}${l.status?`<br><span style="font-size:10px;color:var(--g600)">${esc(l.status)}</span>`:''}</td><td style="font-size:11px;max-width:200px">${last?`${esc(last.note||'')}<br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}${log.length>1?` (${log.length})`:''}</span>`:'<span style="color:var(--g400)">—</span>'}</td><td style="white-space:nowrap">${l.nextFollow?esc(String(l.nextFollow).slice(0,10)):'—'}</td><td><button class="btn btn-primary" style="font-size:10px;padding:2px 8px" onclick="crmLeadForm('${esc(l.leadId)}')">📞 ${LX('متابعة','Contact')}</button></td></tr>`;}).join('');
