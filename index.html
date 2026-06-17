@@ -3608,7 +3608,7 @@ let CRM_CFG={
   leadStatuses:['لا رد','تم الحجز','سيتم الحجز قريباً','الوقت غير مناسب','خارج مناطق التغطية','السعر مرتفع','غير مهتم'],
   addonPackages:['Minute Nutrition'] // باقات تُعطى مع الاشتراك ولا تُحتسب اشتراكاً/جديد/تجديد
 };
-let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:'',myDashPeriod:'month',myDashDrill:''};
+let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:'',myDashPeriod:'month',myDashDrill:'',myDashDate:''};
 let crmHidden={};      // per-metric privacy hide state
 let crmPrivacyAll=false;
 
@@ -3998,12 +3998,24 @@ function crmMe(){return currentUser?[currentUser.name_ar,currentUser.name_en,cur
 function crmIsMine(name){if(!name)return false;const t=String(name).trim();return crmMe().some(n=>n&&n===t);}
 function crmInMonth(t){const ms=crmTxnDate(t);if(!ms)return false;const d=new Date(ms),n=new Date();return d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth();}
 function crmWidgetAllowed(w){return !w.perm||!w.perm.length||w.perm.some(p=>can(p));}
-// period filter for My Dashboard (affects time-based sales widgets)
-function crmDashPeriodMatch(t){const p=crmState.myDashPeriod||'month';if(p==='all')return true;const ms=crmTxnDate(t);if(!ms)return false;const d=new Date(ms),n=new Date();if(p==='today')return d.toDateString()===n.toDateString();if(p==='week'){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}if(p==='month')return d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth();if(p==='year')return d.getFullYear()===n.getFullYear();return true;}
-function crmSetMyDashPeriod(p){crmState.myDashPeriod=p;crmRender();}
+// period filter for My Dashboard (date-driven; applies to sales txns AND free sessions)
+function crmDashDateInPeriod(ms){
+  if(crmState.myDashDate){if(!ms)return false;return crmYMD(new Date(ms))===crmState.myDashDate;}
+  const p=crmState.myDashPeriod||'month';if(p==='all')return true;if(!ms)return false;
+  const d=new Date(ms),n=new Date();
+  if(p==='today')return d.toDateString()===n.toDateString();
+  if(p==='week'){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}
+  if(p==='month')return d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth();
+  if(p==='year')return d.getFullYear()===n.getFullYear();
+  return true;
+}
+function crmDashPeriodMatch(t){return crmDashDateInPeriod(crmTxnDate(t));}
+function crmFreeInPeriod(f){const d=crmSchedDate(f);return crmDashDateInPeriod(d?d.getTime():0);}
+function crmSetMyDashPeriod(p){crmState.myDashPeriod=p;crmState.myDashDate='';crmRender();}
+function crmSetMyDashDate(v){crmState.myDashDate=v||'';crmRender();}
 function crmDashDrillTo(key){crmState.myDashDrill=crmState.myDashDrill===key?'':key;crmRender();}
 // free sessions confirmed (given) but the customer hasn't subscribed yet
-function crmFreeNoSub(){return FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f));}
+function crmFreeNoSub(){return FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)&&crmFreeInPeriod(f));}
 function _freeFollow(f){const log=f.followLog||[];const last=log[log.length-1];return last?(last.note||last.reason||''):(f.followNote||'');}
 function crmDashWidgets(){
   const F=FREE_SESSIONS||[], L=LEADS||[], C=CRM_SVC.complaints||[];
@@ -4017,10 +4029,10 @@ function crmDashWidgets(){
    {key:'mine_leads_due',group:'mine',ic:'⏰',ar:'متابعات Leads عليّ اليوم',en:'My lead follow-ups due',perm:[],color:'#DC2626',pii:true,compute:()=>({v:L.filter(l=>(l.callLog||[]).some(e=>crmIsMine(e.by))&&crmLeadDue(l)&&crmLeadState(l)!=='subscribed').length}),detail:()=>({cols:leadCols,rows:leadRows(L.filter(l=>(l.callLog||[]).some(e=>crmIsMine(e.by))&&crmLeadDue(l)&&crmLeadState(l)!=='subscribed'))})},
    {key:'mine_complaints',group:'mine',ic:'🎯',ar:'شكاوى محوّلة لي',en:'Complaints assigned to me',perm:[],pii:true,compute:()=>{const a=C.filter(x=>crmIsMine(x.assignedTo));const op=a.filter(x=>!crmIsResolved(x)).length;return {v:a.length,sub:LX(op+' مفتوحة',op+' open')};},detail:()=>({cols:[LX('العميل','Customer'),LX('الشكوى','Complaint'),LX('الحالة','Status')],rows:C.filter(x=>crmIsMine(x.assignedTo)).map(x=>[x.customer||'—',x.subject||'',crmNormStatus(x.status)])})},
    // 🏢 الشركة — محكومة بصلاحيات
-   {key:'co_free_total',group:'company',ic:'🎟',ar:'إجمالي الفري سشن',en:'Total free sessions',perm:['manage_complaints','manage_followups'],compute:()=>({v:F.length})},
-   {key:'co_free_confirmed',group:'company',ic:'✅',ar:'فري سشن مؤكدة',en:'Confirmed free sessions',perm:['manage_complaints','manage_followups'],color:'#166534',compute:()=>({v:F.filter(f=>f.status==='confirmed').length})},
-   {key:'co_free_pending',group:'company',ic:'⏳',ar:'فري سشن غير مؤكدة',en:'Unconfirmed free sessions',perm:['manage_complaints','manage_followups'],color:'#D97706',compute:()=>({v:F.filter(f=>f.status!=='confirmed'&&f.status!=='cancelled').length})},
-   {key:'co_free_cancelled',group:'company',ic:'🚫',ar:'فري سشن ملغاة',en:'Cancelled free sessions',perm:['manage_complaints','manage_followups'],compute:()=>({v:F.filter(f=>f.status==='cancelled').length})},
+   {key:'co_free_total',group:'company',ic:'🎟',ar:'إجمالي الفري سشن',en:'Total free sessions',perm:['manage_complaints','manage_followups'],compute:()=>({v:F.filter(crmFreeInPeriod).length})},
+   {key:'co_free_confirmed',group:'company',ic:'✅',ar:'فري سشن مؤكدة',en:'Confirmed free sessions',perm:['manage_complaints','manage_followups'],color:'#166534',compute:()=>({v:F.filter(f=>f.status==='confirmed'&&crmFreeInPeriod(f)).length})},
+   {key:'co_free_pending',group:'company',ic:'⏳',ar:'فري سشن غير مؤكدة',en:'Unconfirmed free sessions',perm:['manage_complaints','manage_followups'],color:'#D97706',compute:()=>({v:F.filter(f=>f.status!=='confirmed'&&f.status!=='cancelled'&&crmFreeInPeriod(f)).length})},
+   {key:'co_free_cancelled',group:'company',ic:'🚫',ar:'فري سشن ملغاة',en:'Cancelled free sessions',perm:['manage_complaints','manage_followups'],compute:()=>({v:F.filter(f=>f.status==='cancelled'&&crmFreeInPeriod(f)).length})},
    {key:'co_free_nosub',group:'company',ic:'🎯',ar:'أكّد الحصة وما اشترك بعد',en:'Confirmed session, not subscribed yet',perm:['manage_complaints','manage_followups','view_dashboard'],color:'#D97706',pii:true,compute:()=>({v:crmFreeNoSub().length}),detail:()=>({cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('موعد الحصة','Session date'),LX('من تابع','Followed by'),LX('تفاصيل المتابعة','Follow-up details')],rows:crmFreeNoSub().map(f=>[f.name,f.phone,String(f.scheduledDate||'').slice(0,10),f.calledBy||'—',_freeFollow(f)||'—'])})},
    {key:'co_leads_total',group:'company',ic:'👥',ar:'إجمالي Leads',en:'Total leads',perm:['manage_leads'],compute:()=>({v:L.length})},
    {key:'co_leads_needcall',group:'company',ic:'🆕',ar:'Leads محتاجة اتصال',en:'Leads needing a call',perm:['manage_leads'],color:'#92400E',pii:true,compute:()=>({v:L.filter(l=>crmLeadState(l)==='uncontacted').length}),detail:()=>({cols:leadCols,rows:leadRows(L.filter(l=>crmLeadState(l)==='uncontacted'))})},
@@ -4035,7 +4047,7 @@ function crmDashWidgets(){
    {key:'co_expiring_month',group:'company',ic:'🔔',ar:'اشتراكات تنتهي خلال شهر',en:'Subs expiring within a month',perm:['view_dashboard'],color:'#D97706',pii:true,compute:()=>{let n=0;CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{const dl=crmDaysLeft(crmEnd(t));if(dl!==null&&dl>=0&&dl<=31)n++;}));return {v:n};},detail:()=>{const r=[];CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{const dl=crmDaysLeft(crmEnd(t));if(dl!==null&&dl>=0&&dl<=31)r.push([c.name,c.phone,t.cat||t.item,crmFmtExpiry(crmEnd(t)),t.trainer||'—']);}));return {cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الاشتراك','Subscription'),LX('ينتهي','Expires'),LX('مقدم الخدمة','Provider')],rows:r};}},
    {key:'co_new_month',group:'company',ic:'🆕',ar:'اشتراكات جديدة',en:'New subscriptions',perm:['view_dashboard'],pii:true,compute:()=>({v:crmTxnsWithType().filter(t=>t._dtype==='New'&&crmDashPeriodMatch(t)).length}),detail:()=>({cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الباقة','Package'),LX('مقدم الخدمة','Provider'),LX('التاريخ','Date')],rows:crmTxnsWithType().filter(t=>t._dtype==='New'&&crmDashPeriodMatch(t)).map(t=>[t.name,t.phone,t.item||t.cat,t.trainer||'—',String(t.pdate||'').slice(0,10)])})},
    {key:'co_renew_month',group:'company',ic:'🔁',ar:'تجديدات',en:'Renewals',perm:['view_dashboard'],pii:true,compute:()=>({v:crmTxnsWithType().filter(t=>t._dtype==='Renewal'&&crmDashPeriodMatch(t)).length}),detail:()=>({cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الباقة','Package'),LX('مقدم الخدمة','Provider'),LX('التاريخ','Date')],rows:crmTxnsWithType().filter(t=>t._dtype==='Renewal'&&crmDashPeriodMatch(t)).map(t=>[t.name,t.phone,t.item||t.cat,t.trainer||'—',String(t.pdate||'').slice(0,10)])})},
-   {key:'co_revenue_month',group:'company',ic:'💰',ar:'الإيراد (ريال)',en:'Revenue (SAR)',perm:['view_dashboard'],color:'#166534',compute:()=>({v:crmMoney(crmTxnsWithType().filter(t=>crmDashPeriodMatch(t)).reduce((s,t)=>s+((t.paid||0)-(t.refunded?(t.refundAmount||0):0)),0))})},
+   {key:'co_revenue_month',group:'company',ic:'💰',ar:isSuperAdmin()?'الإيراد (ريال)':'إيراد هذا الشهر (ريال)',en:isSuperAdmin()?'Revenue (SAR)':'Revenue this month (SAR)',perm:['view_dashboard'],color:'#166534',compute:()=>{const mine=!isSuperAdmin();const tx=crmTxnsWithType().filter(t=>mine?crmInMonth(t):crmDashPeriodMatch(t));return {v:crmMoney(tx.reduce((s,t)=>s+((t.paid||0)-(t.refunded?(t.refundAmount||0):0)),0)),sub:mine?LX('الشهر الحالي فقط','Current month only'):''};}},
   ];
 }
 function crmMyDashDefault(){const all=crmDashWidgets().filter(crmWidgetAllowed);let s=all.filter(w=>w.group==='mine').slice(0,4).map(w=>w.key);if(!s.length)s=all.slice(0,4).map(w=>w.key);return s;}
@@ -4060,11 +4072,13 @@ function crmMyDash(){
     }
   }
   const greet=currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'';
+  const hasDate=!!crmState.myDashDate;
   const PER=[['today',LX('اليوم','Today')],['week',LX('أسبوع','Week')],['month',LX('هذا الشهر','This month')],['year',LX('السنة','Year')],['all',LX('الكل','All')]];
-  const perBtns=PER.map(p=>`<button class="crm-subbtn ${(crmState.myDashPeriod||'month')===p[0]?'on':''}" onclick="crmSetMyDashPeriod('${p[0]}')">${p[1]}</button>`).join('');
+  const perBtns=PER.map(p=>`<button class="crm-subbtn ${(!hasDate&&(crmState.myDashPeriod||'month')===p[0])?'on':''}" onclick="crmSetMyDashPeriod('${p[0]}')">${p[1]}</button>`).join('');
+  const dateBox=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">📅 ${LX('تاريخ محدد','Specific date')}:</span><input type="date" value="${esc(crmState.myDashDate||'')}" onchange="crmSetMyDashDate(this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px${hasDate?';outline:2px solid var(--primary)':''}"/>${hasDate?`<button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmSetMyDashDate('')">✕ ${LX('مسح','Clear')}</button>`:''}`;
   return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px"><h3 style="margin:0;font-size:16px">📊 ${LX('لوحتي','My Dashboard')}${greet?` — ${esc(greet)}`:''}</h3><button class="btn btn-primary" onclick="crmDashCustomize()">⚙️ ${LX('تخصيص','Customize')}</button></div>
-   <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('اضغط أي رقم لعرض تفاصيله تحت — والفلتر يغيّر فترة أرقام المبيعات.','Click any number to see its details below — the filter changes the sales numbers’ period.')}</div>
-   <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:12px"><span style="font-size:11px;color:var(--g600)">🗓</span>${perBtns}</div>${grid}${drillHtml}`;
+   <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('اضغط أي رقم لعرض تفاصيله تحت — والفلتر يغيّر فترة أرقام المبيعات والفري سشن.','Click any number to see its details below — the filter changes the period of sales & free-session numbers.')}</div>
+   <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:12px"><span style="font-size:11px;color:var(--g600)">🗓</span>${perBtns}${dateBox}</div>${grid}${drillHtml}`;
 }
 function crmDashCustomize(){
   const uname=currentUser?currentUser.username:'';
