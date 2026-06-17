@@ -271,6 +271,10 @@ input:focus,select:focus{outline:none;border-color:var(--primary);background:#ff
 
     <!-- ZONES TAB -->
     <div class="tab-content" id="tab-zones">
+      <div class="search-wrap" style="margin-bottom:8px">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="zone-search" placeholder="ابحث برقم الزون أو رياضة (يوغا، بيلاتس...) فتظهر المدربات" oninput="renderZones()"/>
+      </div>
       <div id="zoneListEl"></div>
       <div id="adminZoneBtns"></div>
     </div>
@@ -1356,7 +1360,7 @@ function drawAllZones(){
       radius:(z.radius||5)*1000,color:col,fillColor:col,fillOpacity:.11,weight:2.5,
       dashArray:cs.length===0?'6,4':null,interactive:true,bubblingMouseEvents:false
     }).addTo(map);
-    circle.on('click',e=>{L.DomEvent.stopPropagation(e);L.DomEvent.preventDefault(e);showZonePopup(z,realIdx);});
+    circle.on('click',e=>{L.DomEvent.stopPropagation(e);L.DomEvent.preventDefault(e);showZoneCoaches(z.id,z.cityId);});
     circle.on('mouseover',()=>circle.setStyle({fillOpacity:.22,weight:3.5}));
     circle.on('mouseout',()=>circle.setStyle({fillOpacity:.11,weight:2.5}));
     circles.push(circle);
@@ -1367,7 +1371,7 @@ function drawAllZones(){
       iconSize:[null,26],iconAnchor:[15,13],className:''
     });
     const marker=L.marker([z.lat,z.lng],{icon,zIndexOffset:500}).addTo(map);
-    marker.on('click',e=>{L.DomEvent.stopPropagation(e);showZonePopup(z,realIdx);});
+    marker.on('click',e=>{L.DomEvent.stopPropagation(e);showZoneCoaches(z.id,z.cityId);});
     markers.push(marker);
   });
 }
@@ -1632,8 +1636,10 @@ function renderCoaches(q){
         <div>
           <div class="coach-name"><span style="color:${c.available?'#16A34A':'#DC2626'};margin-left:3px">${c.available?em('available'):em('unavailable')}</span>${c.name}</div>
           <div style="font-size:13px;margin-top:2px">${se} ${c.license?em('license_yes'):''}</div>
+          <div style="font-size:11px;color:var(--g600);margin-top:2px;line-height:1.5">🏷 ${sportsText(c)}</div>
         </div>
         <div style="display:flex;gap:3px;flex-shrink:0">
+          <button class="btn btn-icon" onclick="showCoachDetail(${ri})" title="${lang==='ar'?'التفاصيل':'Details'}">👁</button>
           ${can('edit_coaches')?`<button class="btn btn-icon" onclick="openEditCoach(${ri})">✏️</button>`:''}
           ${can('delete_coaches')?`<button class="btn btn-icon btn-danger" onclick="confirmDeleteCoach(${ri})">🗑</button>`:''}
         </div>
@@ -1731,31 +1737,108 @@ async function deleteTeam(idx){
 }
 
 // ===================== ZONES RENDER =====================
+// zone id may be a plain number (10) or a sub-zone string ("10-1")
+function zoneIdParse(raw){raw=String(raw==null?'':raw).trim();return /^\d+$/.test(raw)?parseInt(raw,10):raw;}
+function zCmp(a,b){return String(a).localeCompare(String(b),undefined,{numeric:true});}
+function zoneNextId(cityId){const ns=ZONES.filter(z=>(z.cityId||'riyadh')===cityId).map(z=>z.id).filter(x=>/^\d+$/.test(String(x))).map(Number);return ns.length?Math.max(...ns)+1:1;}
+// coach sports as readable text (emoji + localized name)
+function sportInfo(s){return EMOJI_SYSTEM.find(x=>x.ar===s||x.en===s)||{emoji:'',ar:s,en:s};}
+function sportsText(c){const a=(c.sports||[]).map(s=>{const e=sportInfo(s);return (e.emoji?e.emoji+' ':'')+(lang==='ar'?e.ar:e.en);});return a.length?a.join('، '):'—';}
+function zoneCoaches(z){return COACHES.filter(c=>c.zones.map(String).includes(String(z.id))&&(c.cityId||'riyadh')===(z.cityId||'riyadh'));}
+// does a coach match a free-text query (name or sport, ar+en)?
+function coachMatchesQ(c,q){
+  if(!q)return true;
+  if(String(c.name||'').toLowerCase().includes(q))return true;
+  return (c.sports||[]).some(s=>String(s).toLowerCase().includes(q)||sportInfo(s).en.toLowerCase().includes(q)||sportInfo(s).ar.includes(q));
+}
 function renderZones(){
   const div=document.getElementById('zoneListEl');if(!div)return;
+  const qel=document.getElementById('zone-search');const q=(qel?qel.value:'').trim().toLowerCase();
   const zonesToShow=filteredZones();
-  if(!zonesToShow.length){div.innerHTML='<div class="empty-state">—</div>';return;}
-  div.innerHTML=zonesToShow.map((z)=>{
+  const cards=zonesToShow.map((z)=>{
     const i=ZONES.indexOf(z);
-    const cs=COACHES.filter(c=>c.zones.includes(z.id)&&(c.cityId||'riyadh')===(z.cityId||'riyadh'));
+    const cs=zoneCoaches(z);
     const av=cs.filter(c=>c.available);
+    // search: keep the zone if its id/label matches OR it has a coach matching the query
+    let matched=cs;
+    if(q){
+      const zoneMatch=String(z.id).toLowerCase()===q||formatZoneId(z).toLowerCase().includes(q);
+      matched=cs.filter(c=>coachMatchesQ(c,q));
+      if(!zoneMatch&&!matched.length)return '';
+      if(zoneMatch&&!matched.length)matched=cs;
+    }
     const col=cs.length>0?(av.length>0?'#16A34A':'#DC2626'):'#9CA3AF';
     const city=CITIES.find(c=>c.id===(z.cityId||'riyadh'));
-    return `<div class="zone-card">
-      <div style="display:flex;align-items:center;gap:8px">
-        <div style="width:10px;height:10px;border-radius:50%;background:${col};flex-shrink:0"></div>
-        <div><div style="font-size:13px;font-weight:700">${formatZoneId(z)} ${city?`<span style="font-weight:400;color:var(--g600);font-size:11px">· ${lang==='ar'?city.ar:city.en}</span>`:''}</div>
-        <div style="font-size:10px;color:#6B7280">${z.lat.toFixed(4)}, ${z.lng.toFixed(4)} · ${z.radius||5}${t('km')} · ${av.length}/${cs.length}</div></div>
-      </div>
-      <div style="display:flex;gap:3px">
-        <a href="https://www.google.com/maps?q=${z.lat},${z.lng}&z=13" target="_blank" class="btn btn-icon" style="text-decoration:none">🗺</a>
-        <button class="btn btn-icon" onclick="map.setView([${z.lat},${z.lng}],13)">👁</button>
-        ${isSuperAdmin()?`<button class="btn btn-icon" onclick="openEditZone(${i})">✏️</button>`:''}
-        ${isSuperAdmin()?`<button class="btn btn-icon btn-danger" onclick="confirmDeleteZone(${i})">🗑</button>`:''}
-      </div></div>`;
+    // when searching, reveal matched coaches inline under the zone
+    const inline=q&&matched.length?`<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--g200)">${matched.map(c=>{const ri=COACHES.indexOf(c);return `<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:11px;padding:2px 0"><span><span style="color:${c.available?'#16A34A':'#DC2626'}">●</span> ${esc(c.name)} <span style="color:var(--g500)">— ${sportsText(c)}</span></span><button class="btn btn-icon" style="padding:1px 5px" onclick="showCoachDetail(${ri})" title="${lang==='ar'?'التفاصيل':'Details'}">👁</button></div>`;}).join('')}</div>`:'';
+    return `<div class="zone-card" style="flex-direction:column;align-items:stretch">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="width:10px;height:10px;border-radius:50%;background:${col};flex-shrink:0"></div>
+          <div><div style="font-size:13px;font-weight:700">${formatZoneId(z)} ${city?`<span style="font-weight:400;color:var(--g600);font-size:11px">· ${lang==='ar'?city.ar:city.en}</span>`:''}</div>
+          <div style="font-size:10px;color:#6B7280">${z.lat.toFixed(4)}, ${z.lng.toFixed(4)} · ${z.radius||5}${t('km')} · 👥 ${av.length}/${cs.length}</div></div>
+        </div>
+        <div style="display:flex;gap:3px;flex-shrink:0">
+          <a href="https://www.google.com/maps?q=${z.lat},${z.lng}&z=13" target="_blank" class="btn btn-icon" style="text-decoration:none">🗺</a>
+          <button class="btn btn-icon" onclick="map.setView([${z.lat},${z.lng}],13);showZoneCoaches('${String(z.id).replace(/'/g,"\\'")}','${z.cityId||'riyadh'}')" title="${lang==='ar'?'عرض المدربات':'Show coaches'}">👁</button>
+          ${isSuperAdmin()?`<button class="btn btn-icon" onclick="openEditZone(${i})">✏️</button>`:''}
+          ${isSuperAdmin()?`<button class="btn btn-icon btn-danger" onclick="confirmDeleteZone(${i})">🗑</button>`:''}
+        </div>
+      </div>${inline}</div>`;
   }).join('');
+  div.innerHTML=cards||'<div class="empty-state">—</div>';
 }
 
+// ---------- coach detail (read-only) ----------
+function showCoachDetail(idx){
+  const c=COACHES[idx];if(!c)return;
+  const city=CITIES.find(ci=>ci.id===(c.cityId||'riyadh'));
+  const zoneLabels=c.zones.length?c.zones.map(zid=>{const z=ZONES.find(zo=>String(zo.id)===String(zid)&&(zo.cityId||'riyadh')===(c.cityId||'riyadh'));return z?formatZoneId(z):String(zid);}).join('، '):'—';
+  const row=(label,val)=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--g100);font-size:13px"><span style="color:var(--g600)">${label}</span><span style="font-weight:600;text-align:${lang==='ar'?'left':'right'}">${val}</span></div>`;
+  openModal(`<h3>${c.available?'🟢':'🔴'} ${esc(c.name)}</h3>
+    <div style="font-size:13px;color:var(--primary);font-weight:700;margin:2px 0 10px;line-height:1.7">🏷 ${sportsText(c)}</div>
+    ${row(lang==='ar'?'الحالة':'Status', c.available?(lang==='ar'?'متاحة':'Available'):(lang==='ar'?'غير متاحة':'Unavailable'))}
+    ${row(lang==='ar'?'الفريق':'Team', esc(c.team||'—'))}
+    ${row(lang==='ar'?'المدينة':'City', city?(lang==='ar'?city.ar:city.en):'—')}
+    ${row(lang==='ar'?'الزونات':'Zones', zoneLabels)}
+    ${row(lang==='ar'?'نوع الدوام':'Employment', c.empType==='fulltime'?t('fulltime'):c.empType==='parttime'?t('parttime'):t('freelancer'))}
+    ${row(lang==='ar'?'ساعات العمل':'Hours', esc(c.hours||'—'))}
+    ${row(lang==='ar'?'يوم الإجازة':'Day off', formatDays(c.dayOff))}
+    ${row(lang==='ar'?'عدد الأعضاء':'Members', c.members??'—')}
+    ${row(lang==='ar'?'الجنسية':'Nationality', esc(c.nationality||'—'))}
+    ${row(lang==='ar'?'الرخصة':'License', c.license?(lang==='ar'?'✅ مرخّصة':'✅ Licensed'):(lang==='ar'?'بدون':'No'))}
+    ${row(lang==='ar'?'الرقم الوظيفي':'Employee ID', c.id??'—')}
+    <div style="display:flex;gap:8px;margin-top:14px">${can('edit_coaches')?`<button class="btn btn-primary" style="flex:1" onclick="closeModal();openEditCoach(${idx})">✏️ ${lang==='ar'?'تعديل':'Edit'}</button>`:''}<button class="btn" style="flex:1" onclick="closeModal()">${lang==='ar'?'إغلاق':'Close'}</button></div>`);
+}
+// ---------- zone coaches side panel (drawer) ----------
+function zonePanelEl(){
+  let p=document.getElementById('zonePanel');
+  if(!p){p=document.createElement('div');p.id='zonePanel';document.body.appendChild(p);}
+  const hidden='translateX('+(lang==='ar'?'-':'')+'110%)';
+  p.style.cssText='position:fixed;top:0;'+(lang==='ar'?'left:0':'right:0')+';height:100%;width:330px;max-width:86vw;background:#fff;box-shadow:0 0 24px rgba(0,0,0,.18);z-index:1200;overflow:auto;padding:16px;direction:'+(lang==='ar'?'rtl':'ltr')+';transition:transform .25s;transform:'+(p.dataset.open==='1'?'translateX(0)':hidden);
+  return p;
+}
+function closeZonePanel(){const p=document.getElementById('zonePanel');if(p){p.dataset.open='0';p.style.transform='translateX('+(lang==='ar'?'-':'')+'110%)';}}
+function showZoneCoaches(zoneKey,cityId){
+  const z=ZONES.find(zz=>String(zz.id)===String(zoneKey)&&(zz.cityId||'riyadh')===(cityId||'riyadh'));
+  if(!z)return;
+  const cs=zoneCoaches(z);const avail=cs.filter(c=>c.available);
+  const city=CITIES.find(c=>c.id===(z.cityId||'riyadh'));
+  const gm=`https://www.google.com/maps?q=${z.lat},${z.lng}&z=13`;
+  const list=cs.length?cs.map(c=>{const ri=COACHES.indexOf(c);return `<div style="border:1px solid var(--g200);border-radius:8px;padding:8px 10px;margin-bottom:7px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px"><div style="font-weight:700;font-size:13px"><span style="color:${c.available?'#16A34A':'#DC2626'}">${c.available?'●':'○'}</span> ${esc(c.name)}</div><button class="btn btn-icon" onclick="showCoachDetail(${ri})" title="${lang==='ar'?'التفاصيل':'Details'}">👁</button></div>
+      <div style="font-size:11px;color:var(--g600);margin-top:3px;line-height:1.6">🏷 ${sportsText(c)}</div>
+      <div style="font-size:10px;color:var(--g400);margin-top:2px">${em('hours')} ${esc(c.hours||'—')}${c.team?' · '+esc(c.team):''}</div>
+    </div>`;}).join(''):`<div style="font-size:12px;color:var(--g400);padding:10px 0">${t('noCoaches')}</div>`;
+  const p=zonePanelEl();
+  p.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:15px;color:var(--primary)">🔵 ${formatZoneId(z)}</b><button class="btn btn-icon" onclick="closeZonePanel()">✕</button></div>
+    <div style="font-size:11px;color:var(--g600);margin-bottom:6px">🏙 ${city?(lang==='ar'?city.ar:city.en):''} · 📍 ${z.lat.toFixed(4)}, ${z.lng.toFixed(4)} · ${z.radius||5}${t('km')}</div>
+    <a href="${gm}" target="_blank" style="font-size:11px;color:#2563EB;text-decoration:none">🗺 ${t('openGm')} ↗</a>
+    <div style="margin:10px 0 6px;font-size:12px;font-weight:700">${t('allCoaches')}: ${avail.length}/${cs.length}</div>
+    ${list}
+    ${isSuperAdmin()?`<div style="display:flex;gap:6px;margin-top:10px"><button class="btn btn-full" onclick="openEditZone(${ZONES.indexOf(z)});closeZonePanel()">✏️ ${lang==='ar'?'تعديل الزون':'Edit zone'}</button></div>`:''}`;
+  p.dataset.open='1';requestAnimationFrame(()=>{p.style.transform='translateX(0)';});
+}
 // ===================== STATS =====================
 function renderStats(){
   const el=document.getElementById('statsEl');if(!el)return;
@@ -2218,7 +2301,7 @@ async function applyImport(type,mode,data){
       const idx=ZONES.findIndex(x=>x.id===z.id&&(x.cityId||'riyadh')===(z.cityId||'riyadh'));
       if(idx>=0)ZONES[idx]=z; else ZONES.push(z);
     });
-    ZONES.sort((a,b)=>{if(a.cityId===b.cityId)return a.id-b.id;return (a.cityId||'').localeCompare(b.cityId||'');});
+    ZONES.sort((a,b)=>{if((a.cityId||'')===(b.cityId||''))return zCmp(a.id,b.id);return (a.cityId||'').localeCompare(b.cityId||'');});
   }
   logHistory(
     lang==='ar'?'تحديث من ملف Excel':'Excel Update',
@@ -2464,7 +2547,7 @@ function openEditCoach(idx){openModal(`<h3>✏️ ${COACHES[idx].name}</h3>${coa
 async function saveCoach(idx){
   const name=document.getElementById('m-name').value.trim();
   if(!name){toast(t('enterName'));return;}
-  const zones=(document.getElementById('m-zones').value||'').split(',').map(s=>parseInt(s.trim())).filter(n=>!isNaN(n));
+  const zones=(document.getElementById('m-zones').value||'').split(',').map(s=>s.trim()).filter(Boolean).map(s=>/^\d+$/.test(s)?parseInt(s,10):s);
   const sports=[...document.querySelectorAll('#modalBox input[type=checkbox]:checked')].map(cb=>cb.value);
   // Get selected days from grid
   const selectedDays=getSelectedDays();
@@ -2505,15 +2588,14 @@ async function confirmDeleteCoach(idx){
 function openAddZone(){
   const defaultCity=currentCity!=='all'?currentCity:(CITIES[0]?.id||'riyadh');
   // compute next id for current city
-  const cityZones=ZONES.filter(z=>(z.cityId||'riyadh')===defaultCity);
-  const nextId=cityZones.length?Math.max(...cityZones.map(z=>z.id))+1:1;
+  const nextId=zoneNextId(defaultCity);
   openModal(`<h3>${t('addZone')}</h3>
     <div class="form-section">
       <label class="form-label">🏙 ${lang==='ar'?'المدينة':'City'} *</label>
       <select id="z-city">${cityOptions(defaultCity)}</select>
     </div>
     <div class="form-grid form-section">
-      <div><label class="form-label">${t('zoneId')} *</label><input id="z-id" type="number" placeholder="${nextId}" value="${nextId}"/></div>
+      <div><label class="form-label">${t('zoneId')} *</label><input id="z-id" type="text" placeholder="${nextId}" value="${nextId}" title="${lang==='ar'?'رقم عادي مثل 10، أو زون فرعي مثل 10-1':'A number like 10, or a sub-zone like 10-1'}"/><div style="font-size:9px;color:#9CA3AF;margin-top:2px">${lang==='ar'?'مثال: 10 أو زون فرعي 10-1':'e.g. 10 or sub-zone 10-1'}</div></div>
       <div><label class="form-label">${t('radius')}</label><input id="z-radius" type="number" value="5"/></div>
     </div>
     <div class="form-grid form-section">
@@ -2531,7 +2613,7 @@ function openEditZone(idx){
       <select id="z-city">${cityOptions(z.cityId)}</select>
     </div>
     <div class="form-grid form-section">
-      <div><label class="form-label">${t('zoneId')}</label><input id="z-id" type="number" value="${z.id}"/></div>
+      <div><label class="form-label">${t('zoneId')}</label><input id="z-id" type="text" value="${z.id}" title="${lang==='ar'?'رقم عادي مثل 10، أو زون فرعي مثل 10-1':'A number like 10, or a sub-zone like 10-1'}"/></div>
       <div><label class="form-label">${t('radius')} (غير لتعديل الدائرة)</label><input id="z-radius" type="number" value="${z.radius||5}" oninput="if(circles[${idx}])circles[${idx}].setRadius(parseFloat(this.value)*1000)"/></div>
     </div>
     <div class="form-grid form-section">
@@ -2544,16 +2626,16 @@ function openEditZone(idx){
 async function saveZone(idx){
   // Editing an existing zone is super-admin only; adding a new one (idx===-1) is allowed for any user with edit_zones.
   if(idx!==-1&&!isSuperAdmin()){toast(lang==='ar'?'تعديل الزون مسموح فقط للمدير الأساسي':'Only the super admin can edit zones');return;}
-  const id=parseInt(document.getElementById('z-id').value);
+  const id=zoneIdParse(document.getElementById('z-id').value);
   const lat=parseFloat(document.getElementById('z-lat').value);
   const lng=parseFloat(document.getElementById('z-lng').value);
   const radius=parseFloat(document.getElementById('z-radius').value)||5;
   const cityId=document.getElementById('z-city')?.value||'riyadh';
-  if(isNaN(id)||isNaN(lat)||isNaN(lng)){toast(t('enterCoords'));return;}
-  // check duplicate within same city
-  if(idx===-1&&ZONES.find(z=>z.id===id&&(z.cityId||'riyadh')===cityId)){toast(t('zoneDuplicate'));return;}
+  if(id===''||isNaN(lat)||isNaN(lng)){toast(t('enterCoords'));return;}
+  // check duplicate id within same city (sub-zones like "10-1" are allowed alongside "10")
+  if(ZONES.find((z,zi)=>zi!==idx&&String(z.id)===String(id)&&(z.cityId||'riyadh')===cityId)){toast(t('zoneDuplicate'));return;}
   const obj={id,cityId,lat,lng,radius};
-  if(idx===-1){ZONES.push(obj);ZONES.sort((a,b)=>{if(a.cityId===b.cityId)return a.id-b.id;return (a.cityId||'').localeCompare(b.cityId||'');});}else ZONES[idx]=obj;
+  if(idx===-1){ZONES.push(obj);ZONES.sort((a,b)=>{if((a.cityId||'')===(b.cityId||''))return zCmp(a.id,b.id);return (a.cityId||'').localeCompare(b.cityId||'');});}else ZONES[idx]=obj;
   logHistory(
     idx===-1?(lang==='ar'?'إضافة زون':'Zone Added'):(lang==='ar'?'تعديل زون':'Zone Edited'),
     formatZoneId(obj)+' — '+obj.lat.toFixed(4)+', '+obj.lng.toFixed(4)+' — R:'+obj.radius+'km',
@@ -2565,8 +2647,7 @@ async function saveZone(idx){
 function promptNewZone(lat,lng){
   drawMode=false;toggleDrawMode();
   const defaultCity=currentCity!=='all'?currentCity:(CITIES[0]?.id||'riyadh');
-  const cityZones=ZONES.filter(z=>(z.cityId||'riyadh')===defaultCity);
-  const nextId=cityZones.length?Math.max(...cityZones.map(z=>z.id))+1:1;
+  const nextId=zoneNextId(defaultCity);
   openModal(`<h3>🔵 زون جديد</h3>
     <p style="font-size:11px;color:#6B7280;margin-bottom:10px">📍 ${lat.toFixed(5)}, ${lng.toFixed(5)}</p>
     <div class="form-section">
@@ -2574,7 +2655,7 @@ function promptNewZone(lat,lng){
       <select id="z-city">${cityOptions(defaultCity)}</select>
     </div>
     <div class="form-grid form-section">
-      <div><label class="form-label">${t('zoneId')} *</label><input id="z-id" type="number" placeholder="${nextId}" value="${nextId}"/></div>
+      <div><label class="form-label">${t('zoneId')} *</label><input id="z-id" type="text" placeholder="${nextId}" value="${nextId}" title="${lang==='ar'?'رقم عادي مثل 10، أو زون فرعي مثل 10-1':'A number like 10, or a sub-zone like 10-1'}"/><div style="font-size:9px;color:#9CA3AF;margin-top:2px">${lang==='ar'?'مثال: 10 أو زون فرعي 10-1':'e.g. 10 or sub-zone 10-1'}</div></div>
       <div><label class="form-label">${t('radius')}</label><input id="z-radius" type="number" value="5"/></div>
     </div>
     <input type="hidden" id="z-lat" value="${lat}"/>
@@ -2595,6 +2676,7 @@ function openModal(content){document.getElementById('modalBox').innerHTML=conten
 function closeModal(){document.getElementById('modalOverlay').classList.remove('show');}
 document.getElementById('modalOverlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal();});
 function switchTab(t2){
+  if(typeof closeZonePanel==='function'&&t2!=='zones'&&t2!=='check')closeZonePanel();
   document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
   const tl=document.getElementById('tl-'+t2);if(tl)tl.classList.add('active');
@@ -3735,6 +3817,7 @@ function importSales(rows){
 
 // ---------- mode + navigation ----------
 function switchMode(mode){
+  if(typeof closeZonePanel==='function')closeZonePanel();
   crmState.mode=mode;
   const crm=document.getElementById('crmRoot'),app=document.querySelector('.app');
   if(mode==='crm'){
