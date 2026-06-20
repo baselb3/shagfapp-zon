@@ -4092,57 +4092,48 @@ function crmDashWidgets(){
   ];
 }
 function crmMyDashDefault(){const all=crmDashWidgets().filter(crmWidgetAllowed);let s=all.filter(w=>w.group==='mine').slice(0,4).map(w=>w.key);if(!s.length)s=all.slice(0,4).map(w=>w.key);return s;}
-function crmMdRefDate(){
-  const sel=crmState.mdRef||'today';
-  if(sel==='date'&&crmState.mdDate){const d=new Date(crmState.mdDate+'T23:59:59');return isNaN(d)?new Date():d;}
-  const off=sel==='-1'?-1:sel==='-3'?-3:0;
-  const n=new Date();return new Date(n.getFullYear(),n.getMonth(),n.getDate()+off,23,59,59);
-}
-function crmSetMdRef(v){crmState.mdRef=v;crmState.mdDate='';crmRender();}
-function crmSetMdDate(v){crmState.mdDate=v||'';crmState.mdRef=v?'date':'today';crmRender();}
-function _dLE(s,ref){if(!s)return false;const d=new Date(String(s).slice(0,10)+'T00:00:00');return !isNaN(d)&&d.getTime()<=ref.getTime();}
+// ---------- shared "work lists" (renewals + free-not-subscribed) used by لوحتي and جديد ----------
 function _lastNote(arr){const x=(arr||[]);const e=x[x.length-1];return e?(e.note||e.reason||''):'';}
+function crmWlState(ctx){if(!crmState.wl)crmState.wl={};if(!crmState.wl[ctx])crmState.wl[ctx]={ref:(ctx==='nd'?'today':'all'),date:''};return crmState.wl[ctx];}
+function crmSetWlRef(ctx,v){const s=crmWlState(ctx);s.ref=v;s.date='';crmRender();}
+function crmSetWlDate(ctx,v){const s=crmWlState(ctx);s.date=v||'';s.ref=v?'date':(ctx==='nd'?'today':'all');crmRender();}
+function crmWlDay(ctx){const s=crmWlState(ctx);if(s.ref==='all')return null;if(s.ref==='date')return s.date||null;const off=s.ref==='-1'?-1:s.ref==='-3'?-3:0;const n=new Date();return crmYMD(new Date(n.getFullYear(),n.getMonth(),n.getDate()+off));}
+function crmWlMatch(ctx,dateStr){const day=crmWlDay(ctx);if(!day)return true;return String(dateStr||'').slice(0,10)===day;}
+function crmWlBar(ctx){
+  const RF=[['all',LX('الكل','All')],['today',LX('اليوم','Today')],['-1',LX('أمس','Yesterday')],['-3',LX('قبل ٣ أيام','3 days ago')]];
+  const s=crmWlState(ctx);const isDate=s.ref==='date'&&s.date;
+  const btns=RF.map(b=>`<button class="crm-subbtn ${(!isDate&&s.ref===b[0])?'on':''}" onclick="crmSetWlRef('${ctx}','${b[0]}')">${b[1]}</button>`).join('');
+  const dbox=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">📅 ${LX('تاريخ محدد','Specific date')}:</span><input type="date" value="${esc(s.date||'')}" onchange="crmSetWlDate('${ctx}',this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px${isDate?';outline:2px solid var(--primary)':''}"/>`;
+  return `<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:14px">🗓 ${btns}${dbox}</div>`;
+}
+function crmRenewBacklog(ctx){
+  const out=[];const today=new Date();today.setHours(23,59,59,0);
+  CUSTOMERS.forEach(c=>{
+    const byCat={};crmRealTxns(c).forEach(t=>{if((t.paid||0)<=0||t.refunded)return;const k=t.cat||t.item||'?';if(!byCat[k]||String(crmEnd(t))>String(crmEnd(byCat[k])))byCat[k]=t;});
+    Object.values(byCat).forEach(t=>{if(!crmProvAllowed(t.trainer))return;const end=new Date(String(crmEnd(t)).slice(0,10)+'T00:00:00');if(isNaN(end))return;const dl=Math.round((end-today)/86400000);if(dl>7)return;if(!crmWlMatch(ctx,crmEnd(t)))return;out.push({c,t,dl});});
+  });
+  return out.sort((a,b)=>a.dl-b.dl);
+}
+function crmFreeNoSubList(ctx){return FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)&&crmProvAllowed(f.trainer)&&crmWlMatch(ctx,f.scheduledDate)).sort((a,b)=>String(b.scheduledDate||'').localeCompare(String(a.scheduledDate||'')));}
+function crmRenewRow(e){const t=e.t,c=e.c;const txt=e.dl<0?LX('انتهى قبل ','expired ')+(-e.dl)+LX(' يوم',' d ago'):(e.dl===0?LX('ينتهي اليوم','expires today'):LX('باقٍ ','in ')+e.dl+LX(' يوم',' d'));const canE=can('edit_customers')||can('manage_followups');return `<div class="crm-card" style="padding:9px 11px;margin-bottom:7px;border-${lang==='ar'?'right':'left'}:4px solid ${e.dl<0?'#991B1B':'#DC2626'}">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div><b>${esc(c.name||'—')}</b> <span dir=ltr style="color:var(--g500);font-size:12px">${esc(c.phone)}</span><div style="font-size:11px;color:var(--g500);margin-top:2px">${esc(t.cat||t.item)}${t.trainer?' · '+esc(t.trainer):''} · ${crmFmtExpiry(crmEnd(t))} <span style="color:${e.dl<0?'#991B1B':'#DC2626'}">(${txt})</span></div>${_lastNote(t.renewLog)?`<div style="font-size:11px;color:var(--g600);margin-top:3px">📝 ${esc(_lastNote(t.renewLog))}</div>`:''}</div>
+    ${canE?`<button class="btn btn-primary" style="font-size:11px;padding:3px 9px;flex-shrink:0" onclick="crmRenewFollowForm('${esc(c.phone)}','${esc(t.inv)}')">➕ ${LX('متابعة + نوت','Follow + note')}</button>`:''}</div></div>`;}
+function crmFreeRow(f){const due=crmFollowDue(f);const canE=can('manage_followups')||can('manage_complaints');return `<div class="crm-card" style="padding:9px 11px;margin-bottom:7px;border-${lang==='ar'?'right':'left'}:4px solid ${due?'#DC2626':'#D97706'}">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div><b>${esc(f.name||'—')}</b> <span dir=ltr style="color:var(--g500);font-size:12px">${esc(f.phone)}</span><div style="font-size:11px;color:var(--g500);margin-top:2px">${cityLabel(f.city)}${f.zoneId!=null?' · Z'+f.zoneId:''} · 🎟 ${esc(String(f.scheduledDate||'').slice(0,10))}${f.trainer?' · '+esc(f.trainer):''}</div>${_lastNote(f.followLog)?`<div style="font-size:11px;color:var(--g600);margin-top:3px">📝 ${esc(_lastNote(f.followLog))}</div>`:''}</div>
+    ${canE?`<button class="btn btn-primary" style="font-size:11px;padding:3px 9px;flex-shrink:0" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">➕ ${LX('متابعة + نوت','Follow + note')}</button>`:''}</div></div>`;}
+function crmWorkLists(ctx){
+  const renew=crmRenewBacklog(ctx);const noSub=crmFreeNoSubList(ctx);
+  const renewCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">🔔 ${LX('اشتراكات منتهية تحتاج تجديد','Subscriptions needing renewal')} <span class="crm-pill pill-red">${renew.length}</span></h3><div style="max-height:540px;overflow:auto">${renew.length?renew.slice(0,200).map(crmRenewRow).join(''):`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div></div>`;
+  const noSubCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">🎟 ${LX('أخذوا فري سشن وما اشتركوا','Took a free session, no subscription')} <span class="crm-pill pill-amber">${noSub.length}</span></h3><div style="max-height:540px;overflow:auto">${noSub.length?noSub.slice(0,200).map(crmFreeRow).join(''):`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div></div>`;
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px">${renewCard}${noSubCard}</div>`;
+}
 function crmMyDash(){
   const greet=currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'';
-  const ref=crmMdRefDate();
-  const RF=[['today',LX('اليوم','Today')],['-1',LX('أمس','Yesterday')],['-3',LX('قبل ٣ أيام','3 days ago')]];
-  const isDate=(crmState.mdRef==='date'&&crmState.mdDate);
-  const rfBtns=RF.map(b=>`<button class="crm-subbtn ${(!isDate&&(crmState.mdRef||'today')===b[0])?'on':''}" onclick="crmSetMdRef('${b[0]}')">${b[1]}</button>`).join('');
-  const dateBox=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">📅 ${LX('تاريخ محدد','Specific date')}:</span><input type="date" value="${esc(crmState.mdDate||'')}" onchange="crmSetMdDate(this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px${isDate?';outline:2px solid var(--primary)':''}"/>`;
-  const canFree=can('manage_followups')||can('manage_complaints');
-  const leadsDue=can('manage_leads')?LEADS.filter(l=>l.nextFollow&&_dLE(l.nextFollow,ref)&&crmLeadState(l)!=='subscribed'):[];
-  const freeFollowDue=canFree?FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)&&f.followDate&&_dLE(f.followDate,ref)&&crmProvAllowed(f.trainer)):[];
-  const renew=[];
-  if(can('view_crm')||can('manage_followups'))CUSTOMERS.forEach(c=>{
-    const byCat={};crmRealTxns(c).forEach(t=>{if((t.paid||0)<=0||t.refunded)return;const k=t.cat||t.item||'?';if(!byCat[k]||String(crmEnd(t))>String(crmEnd(byCat[k])))byCat[k]=t;});
-    Object.values(byCat).forEach(t=>{
-      if(!crmProvAllowed(t.trainer))return;
-      const end=new Date(String(crmEnd(t)).slice(0,10)+'T00:00:00');if(isNaN(end))return;
-      const dl=Math.round((end-ref)/86400000);
-      if(dl<=7&&dl>=-30)renew.push({c,t,dl});
-    });
-  });
-  renew.sort((a,b)=>a.dl-b.dl);
-  const freeNoSub=(canFree||can('view_dashboard'))?FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)&&_dLE(f.scheduledDate,ref)&&crmProvAllowed(f.trainer)):[];
-  const leadRow=l=>{const due=crmLeadDue(l);return `<div class="crm-card" style="padding:9px 11px;margin-bottom:7px;border-${lang==='ar'?'right':'left'}:4px solid ${due?'#DC2626':'#1D4ED8'}">
-    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div><b>${esc(l.name||'—')}</b> <span dir=ltr style="color:var(--g500);font-size:12px">${esc(l.phone)}</span><div style="font-size:11px;color:var(--g500);margin-top:2px">${esc(l.cityName||cityLabel(l.city))}${l.zoneId!=null?' · Z'+l.zoneId:''}${l.goal?' · '+esc(l.goal):''} · ${LX('الحالة','State')}: ${esc(l.status||crmLeadState(l))}</div>${_lastNote(l.callLog)?`<div style="font-size:11px;color:var(--g600);margin-top:3px">📝 ${esc(_lastNote(l.callLog))}</div>`:''}<div style="font-size:10px;color:${due?'#DC2626':'var(--g400)'};margin-top:2px">⏰ ${LX('متابعة','follow')}: ${esc(String(l.nextFollow||'').slice(0,10))}</div></div>
-    <button class="btn btn-primary" style="font-size:11px;padding:3px 9px;flex-shrink:0" onclick="crmLeadForm('${esc(l.leadId)}')">📞 ${LX('متابعة + نوت','Follow + note')}</button></div></div>`;};
-  const freeRow=f=>{const due=crmFollowDue(f);return `<div class="crm-card" style="padding:9px 11px;margin-bottom:7px;border-${lang==='ar'?'right':'left'}:4px solid ${due?'#DC2626':'#D97706'}">
-    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div><b>${esc(f.name||'—')}</b> <span dir=ltr style="color:var(--g500);font-size:12px">${esc(f.phone)}</span><div style="font-size:11px;color:var(--g500);margin-top:2px">${cityLabel(f.city)}${f.zoneId!=null?' · Z'+f.zoneId:''} · 🎟 ${esc(String(f.scheduledDate||'').slice(0,10))}${f.trainer?' · '+esc(f.trainer):''}</div>${_lastNote(f.followLog)?`<div style="font-size:11px;color:var(--g600);margin-top:3px">📝 ${esc(_lastNote(f.followLog))}</div>`:''}${f.followDate?`<div style="font-size:10px;color:${due?'#DC2626':'var(--g400)'};margin-top:2px">⏰ ${LX('متابعة','follow')}: ${esc(String(f.followDate).slice(0,10))}</div>`:''}</div>
-    <button class="btn btn-primary" style="font-size:11px;padding:3px 9px;flex-shrink:0" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">➕ ${LX('متابعة + نوت','Follow + note')}</button></div></div>`;};
-  const renewRow=e=>{const t=e.t,c=e.c;const txt=e.dl<0?LX('انتهى قبل ','expired ')+(-e.dl)+LX(' يوم',' d ago'):(e.dl===0?LX('ينتهي اليوم','expires today'):LX('باقٍ ','in ')+e.dl+LX(' يوم',' d'));return `<div class="crm-card" style="padding:9px 11px;margin-bottom:7px;border-${lang==='ar'?'right':'left'}:4px solid ${e.dl<0?'#991B1B':'#DC2626'}">
-    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div><b>${esc(c.name||'—')}</b> <span dir=ltr style="color:var(--g500);font-size:12px">${esc(c.phone)}</span><div style="font-size:11px;color:var(--g500);margin-top:2px">${esc(t.cat||t.item)}${t.trainer?' · '+esc(t.trainer):''} · ${crmFmtExpiry(crmEnd(t))} <span style="color:${e.dl<0?'#991B1B':'#DC2626'}">(${txt})</span></div>${_lastNote(t.renewLog)?`<div style="font-size:11px;color:var(--g600);margin-top:3px">📝 ${esc(_lastNote(t.renewLog))}</div>`:''}</div>
-    <button class="btn btn-primary" style="font-size:11px;padding:3px 9px;flex-shrink:0" onclick="crmRenewFollowForm('${esc(c.phone)}','${esc(t.inv)}')">➕ ${LX('متابعة + نوت','Follow + note')}</button></div></div>`;};
-  const followItems=leadsDue.map(leadRow).join('')+freeFollowDue.map(freeRow).join('');
-  const followCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">📞 ${LX('متابعة اليوم','Follow-ups due')} <span class="crm-pill pill-blue">${leadsDue.length+freeFollowDue.length}</span></h3>${followItems||`<div class="crm-empty">${LX('لا متابعات مجدولة لهذا اليوم','No scheduled follow-ups for this day')}</div>`}</div>`;
-  const renewCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">🔔 ${LX('اشتراكات منتهية تحتاج تجديد','Subscriptions needing renewal')} <span class="crm-pill pill-red">${renew.length}</span></h3>${renew.length?renew.map(renewRow).join(''):`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div>`;
-  const noSubCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">🎟 ${LX('أخذوا فري سشن وما اشتركوا','Took a free session, no subscription')} <span class="crm-pill pill-amber">${freeNoSub.length}</span></h3>${freeNoSub.length?freeNoSub.map(freeRow).join(''):`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div>`;
-  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px"><h3 style="margin:0;font-size:16px">📋 ${LX('لوحتي — مهام اليوم','My board — today')}${greet?` · ${esc(greet)}`:''}</h3></div>
-   <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('كل اللي تشتغل عليه اليوم — تابِع واكتب النوت من هنا مباشرة. غيّر اليوم لمراجعة المتأخرات.','Everything to handle today — follow up and write the note right here. Change the day to review past items.')}</div>
-   <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:14px">🗓 ${rfBtns}${dateBox}</div>
-   ${followCard}
-   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:12px">${renewCard}${noSubCard}</div>`;
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px"><h3 style="margin:0;font-size:16px">📋 ${LX('لوحتي','My board')}${greet?` · ${esc(greet)}`:''}</h3></div>
+   <div style="font-size:11px;color:var(--g400);margin-bottom:10px">${LX('اللي يحتاج تجديد واللي أخذ فري سشن وما اشترك — تابِع واكتب النوت من هنا. «الكل» يعرض القائمة كاملة، والأزرار تفلتر بيوم العنصر.','Renewals due and free-session no-subs — follow up and note here. “All” shows the full list; the buttons filter by the item’s day.')}</div>
+   ${crmWlBar('my')}${crmWorkLists('my')}`;
 }
+
 function crmDashCustomize(){
   const uname=currentUser?currentUser.username:'';
   const all=crmDashWidgets().filter(crmWidgetAllowed);
@@ -5166,50 +5157,40 @@ function crmTodoDelete(id){
   mutateListDoc('crm_todos',cur=>cur.filter(x=>String(x.id)!==String(id))).then(n=>{CRM_TODOS=n;toast('🗑 '+LX('حُذفت','Deleted'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 // ===================== NEW (CONVERSION) DASHBOARD =====================
-function crmNdMatch(f){const d=crmSchedDate(f);if(!d)return crmState.ndPeriod==='all';const ms=d.getTime();
-  if(crmState.ndFrom||crmState.ndTo){const day=crmYMD(d);if(crmState.ndFrom&&day<crmState.ndFrom)return false;if(crmState.ndTo&&day>crmState.ndTo)return false;return true;}
-  const p=crmState.ndPeriod||'month';if(p==='all')return true;const n=new Date();
-  if(p==='today')return d.toDateString()===n.toDateString();
-  if(p==='week'){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}
-  if(p==='month')return d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth();
-  return true;}
+function crmNdMatch(f){return crmWlMatch('nd',f.scheduledDate);}
+
 function crmNewDash(){
-  // free sessions actually given (confirmed) within the period
-  const given=FREE_SESSIONS.filter(f=>f.status==='confirmed'&&crmNdMatch(f));
+  const ctx='nd';
+  const dayFree=FREE_SESSIONS.filter(f=>crmProvAllowed(f.trainer)&&crmWlMatch(ctx,f.scheduledDate));
+  const fConfirmed=dayFree.filter(f=>f.status==='confirmed').length;
+  const fCancelled=dayFree.filter(f=>f.status==='cancelled').length;
+  const fPending=dayFree.filter(f=>f.status!=='confirmed'&&f.status!=='cancelled').length;
+  const given=dayFree.filter(f=>f.status==='confirmed');
   const subscribed=given.filter(crmIsConverted);
-  const notSub=given.filter(f=>!crmIsConverted(f));
   const rate=given.length?Math.round(subscribed.length/given.length*100):0;
-  // per coach (trainer) tallies
   const byCoach={};given.forEach(f=>{const k=f.trainer||'—';if(!byCoach[k])byCoach[k]={given:0,sub:0};byCoach[k].given++;if(crmIsConverted(f))byCoach[k].sub++;});
   const coaches=Object.entries(byCoach).map(([k,v])=>({coach:k,given:v.given,sub:v.sub,nosub:v.given-v.sub,rate:v.given?Math.round(v.sub/v.given*100):0}));
   const topGiver=coaches.slice().sort((a,b)=>b.given-a.given)[0];
   const topConv=coaches.slice().sort((a,b)=>b.sub-a.sub||b.rate-a.rate)[0];
-  const topNoSub=coaches.slice().sort((a,b)=>b.nosub-a.nosub)[0];
-  const fromV=esc(crmState.ndFrom||''),toV=esc(crmState.ndTo||'');
-  const PER=[['today',LX('اليوم','Today')],['week',LX('أسبوع','Week')],['month',LX('هذا الشهر','This month')],['all',LX('الكل','All')]];
-  const hasRange=!!(crmState.ndFrom||crmState.ndTo);
-  const perBtns=PER.map(p=>`<button class="crm-subbtn ${(!hasRange&&(crmState.ndPeriod||'month')===p[0])?'on':''}" onclick="crmSetNdPeriod('${p[0]}')">${p[1]}</button>`).join('');
-  const M=(ic,l,v,col,sub)=>`<div class="metric"><div class="ml">${ic} ${l}</div><div class="mv"${col?` style="color:${col}"`:''}>${v}</div>${sub?`<div style="font-size:11px;color:var(--g400);margin-top:3px">${sub}</div>`:''}</div>`;
-  const coachCard=(title,ic,c,metric)=>`<div class="crm-card"><h3>${ic} ${title}</h3>${c?`<div style="font-size:15px;font-weight:800">${esc(c.coach)}</div><div style="font-size:12px;color:var(--g600);margin-top:3px">${LX('أعطت','Gave')} ${c.given} · ${LX('اشترك','Subscribed')} ${c.sub} · ${LX('ما اشترك','Not subscribed')} ${c.nosub} · ${c.rate}%</div>`:`<div class="crm-empty">—</div>`}</div>`;
-  const coachRows=coaches.sort((a,b)=>b.given-a.given).map(c=>`<tr><td>${esc(c.coach)}</td><td>${c.given}</td><td style="color:#166534;font-weight:700">${c.sub}</td><td style="color:#B45309">${c.nosub}</td><td>${c.rate}%</td></tr>`).join('');
-  return `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px"><h3 style="margin:0;font-size:16px">🆕 ${LX('جديد — تحويل التجارب لاشتراكات','New — trial → subscription conversion')}</h3>${can('export_data')?`<button class="btn" style="font-size:11px;padding:3px 10px" onclick="crmNdExport()">⬇️ Excel</button>`:''}</div>
-    <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--g600)">🗓</span>${perBtns}
-      <span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">${LX('من','From')}</span><input type="date" value="${fromV}" onchange="crmSetNdRange(this.value,null)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px"/>
-      <span style="font-size:11px;color:var(--g600)">${LX('إلى','To')}</span><input type="date" value="${toV}" onchange="crmSetNdRange(null,this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px"/>
-      ${hasRange?`<button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmSetNdRange('','')">✕ ${LX('مسح','Clear')}</button>`:''}</div>
+  const M=(ic,l,v,col)=>`<div class="metric"><div class="ml">${ic} ${l}</div><div class="mv"${col?` style="color:${col}"`:''}>${v}</div></div>`;
+  const coachCard=(title,ic,c)=>`<div class="crm-card"><h3>${ic} ${title}</h3>${c?`<div style="font-size:15px;font-weight:800">${esc(c.coach)}</div><div style="font-size:12px;color:var(--g600);margin-top:3px">${LX('أعطت','Gave')} ${c.given} · ${LX('اشترك','Subscribed')} ${c.sub} · ${LX('ما اشترك','No sub')} ${c.nosub} · ${c.rate}%</div>`:`<div class="crm-empty">—</div>`}</div>`;
+  return `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:4px"><h3 style="margin:0;font-size:16px">🆕 ${LX('جديد — الفري سشن والتجديد','New — free sessions & renewals')}</h3>${can('export_data')?`<button class="btn" style="font-size:11px;padding:3px 10px" onclick="crmNdExport()">⬇️ Excel</button>`:''}</div>
+    <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('خدمة العملاء تسجّل الحصص؛ هنا المبيعات تشوف حصص اليوم وحالتها + اللي يحتاج تجديد واللي أخذ فري سشن وما اشترك. اختر اليوم من الفلتر.','CS records sessions; here sales see the day’s sessions + renewals + no-subs. Pick the day from the filter.')}</div>
+    ${crmWlBar(ctx)}
     <div class="metric-grid">
-      ${M('🎟',LX('جرّبوا (حصص أُعطيت)','Tried (sessions given)'),given.length)}
-      ${M('✅',LX('جرّبوا واشتركوا','Tried & subscribed'),subscribed.length,'#166534')}
-      ${M('🚫',LX('جرّبوا وما اشتركوا','Tried, not subscribed'),notSub.length,'#B45309')}
-      ${M('📈',LX('نسبة التحويل','Conversion rate'),rate+'%','#1D4ED8')}
+      ${M('🎟',LX('فري سشن (الفترة)','Free sessions'),dayFree.length)}
+      ${M('✅',LX('مؤكدة','Confirmed'),fConfirmed,'#166534')}
+      ${M('⏳',LX('غير مؤكدة لحد الآن','Not confirmed yet'),fPending,'#D97706')}
+      ${M('🚫',LX('ملغاة','Cancelled'),fCancelled,'#991B1B')}
+      ${M('📈',LX('نسبة التحويل','Conversion'),rate+'%','#1D4ED8')}
     </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:4px">
-      ${coachCard(LX('أكثر مدربة أعطت حصص','Top coach by sessions given'),'🏅',topGiver)}
-      ${coachCard(LX('أكثر مدربة تحوّلت لاشتراكات','Top coach by subscriptions'),'💳',topConv)}
-      ${coachCard(LX('أكثر مدربة أعطت وما اشتركوا','Most given but no subscription'),'⚠️',topNoSub)}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">
+      ${coachCard(LX('أكثر مدربة أعطت','Top coach by sessions'),'🏅',topGiver)}
+      ${coachCard(LX('أكثر مدربة تحوّلت','Top coach by subs'),'💳',topConv)}
     </div>
-    ${can('view_customer_lists')?`<div class="crm-card"><h3>👟 ${LX('تفصيل حسب مقدم الخدمة','Breakdown by provider')}</h3><table class="crm-table"><thead><tr><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('أعطت','Given')}</th><th>${LX('اشترك','Subscribed')}</th><th>${LX('ما اشترك','Not sub')}</th><th>${LX('التحويل','Conv.')}</th></tr></thead><tbody>${coachRows||`<tr><td colspan=5 class="crm-empty">—</td></tr>`}</tbody></table></div>`:''}`;
+    ${crmWorkLists(ctx)}`;
 }
+
 function crmSetNdPeriod(p){crmState.ndPeriod=p;crmState.ndFrom='';crmState.ndTo='';crmRender();}
 function crmSetNdRange(f,t){if(f!==null)crmState.ndFrom=f;if(t!==null)crmState.ndTo=t;crmRender();}
 function crmNdExport(){
