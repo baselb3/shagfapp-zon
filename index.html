@@ -4215,8 +4215,28 @@ function crmDrillBody(k){
   if(k==='followToday')return tbl([H.cust,H.mob,H.fdate,H.nosub],FREE_SESSIONS.filter(f=>f.status!=='cancelled'&&!crmIsConverted(f)&&crmFollowDue(f)).map(f=>`<tr><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}</td><td>${esc(String(f.followDate||'').slice(0,10))}</td><td>${esc(f.notSubReason||'—')}</td></tr>`));
   return '<div class="crm-empty">—</div>';
 }
+// ---------- reusable Excel-style per-column filters (dropdown per categorical column) ----------
+function crmColF(page){if(!crmState.colF)crmState.colF={};if(!crmState.colF[page])crmState.colF[page]={};return crmState.colF[page];}
+function crmSetColF(page,col,v){const f=crmColF(page);if(v==='')delete f[col];else f[col]=v;crmRender();}
+function crmClearColF(page){if(crmState.colF)crmState.colF[page]={};crmRender();}
+function crmHasColF(page){return Object.keys(crmColF(page)).length>0;}
+function crmApplyColF(page,rows,cols){const f=crmColF(page);const active=cols.filter(c=>c&&c.key&&f[c.key]!=null);if(!active.length)return rows;return rows.filter(r=>active.every(c=>String(c.acc(r)==null?'':c.acc(r))===String(f[c.key])));}
+// a <tr> of filter dropdowns aligned to the table columns; cols entries: null (no filter) or {key,acc,label}
+function crmColFilterRow(page,cols,baseRows){
+  const f=crmColF(page);
+  return '<tr>'+cols.map(c=>{
+    if(!c||!c.key||!c.acc)return '<th style="padding:1px 3px;background:var(--g50)"></th>';
+    const vals=[...new Set(baseRows.map(r=>String(c.acc(r)==null?'':c.acc(r))).filter(v=>v!==''&&v!=='—'))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+    const sel=f[c.key]||'';
+    return `<th style="padding:1px 3px;background:var(--g50)"><select onchange="crmSetColF('${page}','${c.key}',this.value)" title="${c.label||''}" style="width:100%;min-width:64px;font-size:10px;padding:2px;border:1px solid ${sel?'var(--primary)':'var(--g200)'};border-radius:4px;background:#fff;font-weight:${sel?'700':'400'}"><option value="">${LX('الكل','All')}</option>${vals.map(v=>`<option value="${esc(v)}" ${sel===v?'selected':''}>${esc(v)}</option>`).join('')}</select></th>`;
+  }).join('')+'</tr>';
+}
+function crmClearColFBtn(page){return crmHasColF(page)?`<button class="btn" style="font-size:10px;padding:3px 9px" onclick="crmClearColF('${page}')">✕ ${LX('مسح فلاتر الأعمدة','Clear column filters')}</button>`:'';}
 function crmSalesList(type){
-  let rows=crmTxnsWithType().filter(t=>t._dtype===type&&crmSalesPeriodMatch(t)&&crmSalesSearchMatch(t));
+  const page='sales|'+type;
+  const FCOLS=[null,null,{key:'city',acc:t=>cityLabel(t.city),label:LX('المدينة','City')},{key:'zone',acc:t=>t.zoneId!=null?'Z'+t.zoneId:'',label:LX('الزون','Zone')},{key:'pkg',acc:t=>t.item||t.cat||'',label:LX('الباقة','Package')},null,{key:'prov',acc:t=>t.trainer||'',label:LX('مقدم الخدمة','Provider')},null,null,null];
+  let base=crmTxnsWithType().filter(t=>t._dtype===type&&crmSalesPeriodMatch(t)&&crmSalesSearchMatch(t));
+  let rows=crmApplyColF(page,base,FCOLS);
   const sort=crmState.salesSort||'newest';
   const endMs=t=>{const d=new Date(String(crmEnd(t)).slice(0,10)+'T00:00:00');return isNaN(d)?0:d.getTime();};
   const cmp={
@@ -4235,9 +4255,9 @@ function crmSalesList(type){
   const cntLabel=type==='New'?LX('عملاء جدد','New'):LX('تجديدات','Renewals');
   const searchRow=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><input type="text" id="salesSearch" placeholder="🔍 ${LX('بحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" value="${esc(crmState.salesSearch||'')}" oninput="crmSetSalesSearch(this.value)" style="flex:1;min-width:160px"><span class="crm-pill pill-blue" style="font-size:12px;padding:4px 10px">${cntLabel}: ${rows.length}</span></div>
     <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--g600)">${LX('الفترة:','Period:')}</span>${spBtns}</div>`;
-  const bar=searchRow+`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px">${sortSel}</div>${crmExpBtn('⬇️ '+LX('تصدير Excel','Export Excel'))}</div>`;
-  if(!rows.length)return up+bar+`<div class="crm-empty">${LX('لا توجد نتائج ضمن الفلتر/البحث','No results for this filter/search')}</div>`;
-  return up+bar+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('الباقة','Package')}</th><th>${LX('الحصص','Sessions')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('المدفوع','Paid')}</th><th>${LX('تاريخ الشراء','Purchase date')}</th><th>${LX('ينتهي','Expires')}</th></tr></thead><tbody>${rows.slice(0,300).map(t=>`<tr><td>${esc(t.name)}</td><td dir=ltr>${esc(t.phone)}</td><td>${cityLabel(t.city)}</td><td>${t.zoneId!=null?'Z'+t.zoneId:'—'}</td><td>${esc(t.item||t.cat)}</td><td>${t.sessions||0}</td><td>${esc(t.trainer||'—')}${can('edit_customers')?` <button class="btn" style="font-size:9px;padding:0 5px;vertical-align:middle" onclick="crmEditProvider('${esc(t.phone)}','${esc(t.inv)}')" title="${LX('تعديل مقدم الخدمة','Edit provider')}">✏️</button>`:''}</td><td>${crmMoney(t.paid)}</td><td style="white-space:nowrap">${esc(String(t.pdate||'').slice(0,10)||'—')}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td></tr>`).join('')}</tbody></table>${rows.length>300?`<div class="crm-empty">${LX('عرض ٣٠٠ من','Showing 300 of')} ${rows.length} — ${LX('استخدم الترتيب/التصدير','use sort/export')}</div>`:''}</div>`;
+  const bar=searchRow+`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px">${sortSel}${crmClearColFBtn(page)}</div>${crmExpBtn('⬇️ '+LX('تصدير Excel','Export Excel'))}</div>`;
+  if(!base.length)return up+bar+`<div class="crm-empty">${LX('لا توجد نتائج ضمن الفلتر/البحث','No results for this filter/search')}</div>`;
+  return up+bar+`<div class="crm-card" style="overflow-x:auto"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الزون','Zone')}</th><th>${LX('الباقة','Package')}</th><th>${LX('الحصص','Sessions')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('المدفوع','Paid')}</th><th>${LX('تاريخ الشراء','Purchase date')}</th><th>${LX('ينتهي','Expires')}</th></tr>${crmColFilterRow(page,FCOLS,base)}</thead><tbody>${rows.slice(0,300).map(t=>`<tr><td>${esc(t.name)}</td><td dir=ltr>${esc(t.phone)}</td><td>${cityLabel(t.city)}</td><td>${t.zoneId!=null?'Z'+t.zoneId:'—'}</td><td>${esc(t.item||t.cat)}</td><td>${t.sessions||0}</td><td>${esc(t.trainer||'—')}${can('edit_customers')?` <button class="btn" style="font-size:9px;padding:0 5px;vertical-align:middle" onclick="crmEditProvider('${esc(t.phone)}','${esc(t.inv)}')" title="${LX('تعديل مقدم الخدمة','Edit provider')}">✏️</button>`:''}</td><td>${crmMoney(t.paid)}</td><td style="white-space:nowrap">${esc(String(t.pdate||'').slice(0,10)||'—')}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td></tr>`).join('')}</tbody></table>${rows.length>300?`<div class="crm-empty">${LX('عرض ٣٠٠ من','Showing 300 of')} ${rows.length} — ${LX('استخدم الترتيب/التصدير','use sort/export')}</div>`:''}</div>`;
 }
 function crmCustomers(){
   if(!can('view_customer_lists'))return `<div class="crm-empty">${LX('ليس لديك صلاحية عرض قوائم العملاء التفصيلية — راجع الأدمن','You don’t have permission to view detailed customer lists — ask the admin')}</div>`;
@@ -4600,7 +4620,7 @@ function crmFreeSessions(){
   const sfBtns=SF.map(s=>`<button class="crm-subbtn ${ (crmState.freeStatus||'')===s[0]?'on':''}" onclick="crmSetFreeStatus2('${s[0]}')">${s[1]}</button>`).join('');
   const filterBar=`<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px">${dayBtns}${dateInput}${crmExpBtn('⬇️ Excel','font-size:11px;padding:3px 10px;margin-'+(lang==='ar'?'right':'left')+':auto')}</div>
     <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--g600)">${LX('الحالة:','Status:')}</span>${sfBtns}</div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px"><input type="text" id="freeSearch" placeholder="🔍 ${LX('بحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" value="${esc(crmState.freeSearch||'')}" oninput="crmSetFreeSearch(this.value)" style="flex:1;min-width:160px"><button class="crm-subbtn ${crmState.freeDup?'on':''}" onclick="crmToggleFreeDup()">🔁 ${LX('المكرّرة فقط','Duplicates only')}</button></div>`;
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px"><input type="text" id="freeSearch" placeholder="🔍 ${LX('بحث بالاسم أو رقم الجوال...','Search by name or mobile...')}" value="${esc(crmState.freeSearch||'')}" oninput="crmSetFreeSearch(this.value)" style="flex:1;min-width:160px"><button class="crm-subbtn ${crmState.freeDup?'on':''}" onclick="crmToggleFreeDup()">🔁 ${LX('المكرّرة فقط','Duplicates only')}</button>${crmClearColFBtn('free')}</div>`;
   // metrics over ALL date-matched (any status)
   const dm=FREE_SESSIONS.filter(crmFreeDateMatch);
   const phoneCount={};dm.forEach(f=>{const p=String(f.phone||'').trim();if(p)phoneCount[p]=(phoneCount[p]||0)+1;});
@@ -4610,7 +4630,10 @@ function crmFreeSessions(){
   const pending=dm.filter(f=>f.status!=='confirmed'&&f.status!=='cancelled').length;
   const cancelled=dm.filter(f=>f.status==='cancelled').length;
   const soon=dm.filter(f=>f.status!=='confirmed'&&f.status!=='cancelled'&&crmFreeHoursLeft(f)!==null&&crmFreeHoursLeft(f)>0&&crmFreeHoursLeft(f)<=3).length;
-  const list=FREE_SESSIONS.filter(f=>crmFreeDateMatch(f)&&crmFreeStatusMatch(f)&&crmFreeSearchMatch(f)&&(!crmState.freeDup||(phoneCount[String(f.phone||'').trim()]||0)>1)).slice().sort((a,b)=>String(a.scheduledDate||'').localeCompare(String(b.scheduledDate||'')));
+  const base=FREE_SESSIONS.filter(f=>crmFreeDateMatch(f)&&crmFreeStatusMatch(f)&&crmFreeSearchMatch(f)&&(!crmState.freeDup||(phoneCount[String(f.phone||'').trim()]||0)>1)).slice().sort((a,b)=>String(a.scheduledDate||'').localeCompare(String(b.scheduledDate||'')));
+  const page='free';
+  const FCOLS=[null,null,{key:'city',acc:f=>cityLabel(f.city),label:LX('المدينة','City')},null,null,{key:'prov',acc:f=>f.trainer||'',label:LX('مقدم الخدمة','Provider')},{key:'booked',acc:f=>f.bookedBy||'',label:LX('من حجزها','Booked by')},null,{key:'result',acc:f=>f.status==='cancelled'?'':(crmIsConverted(f)?LX('اشترك','Subscribed'):LX('لم يشترك','No sub')),label:LX('النتيجة','Result')},null];
+  const list=crmApplyColF(page,base,FCOLS);
   const head=`<div class="metric-grid">
     <div class="metric"><div class="ml">📋 ${LX('إجمالي الحصص','Total sessions')}</div><div class="mv">${dm.length}</div></div>
     <div class="metric"><div class="ml">👤 ${LX('أرقام فريدة','Unique numbers')}</div><div class="mv">${uniquePhones}</div></div>
@@ -4621,7 +4644,7 @@ function crmFreeSessions(){
     <div class="metric"><div class="ml">🎯 ${LX('تحوّلوا لمشتركين','Converted')}</div><div class="mv">${dm.filter(f=>f.status!=='cancelled'&&crmIsConverted(f)).length}</div></div></div>`;
   const canEdit=can('manage_complaints')||can('manage_followups');
   const canDel=(typeof isSuperAdmin==='function'&&isSuperAdmin());
-  return up+filterBar+head+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الموعد','Appointment')}</th><th>${LX('متبقٍ','Left')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('من حجزها','Booked by')}</th><th>${LX('الحالة','Status')}</th><th>${LX('النتيجة','Result')}</th><th></th></tr></thead><tbody>${(list.length>300?list.slice(0,300):list).map(f=>{
+  return up+filterBar+head+`<div class="crm-card" style="overflow-x:auto"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الموعد','Appointment')}</th><th>${LX('متبقٍ','Left')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('من حجزها','Booked by')}</th><th>${LX('الحالة','Status')}</th><th>${LX('النتيجة','Result')}</th><th></th></tr>${crmColFilterRow(page,FCOLS,base)}</thead><tbody>${(list.length>300?list.slice(0,300):list).map(f=>{
     const cancelledRow=f.status==='cancelled';
     const conv=crmIsConverted(f);
     const result=cancelledRow?'—':(conv?`<span class="crm-pill pill-green">${LX('اشترك','Subscribed')}</span>`:`<span class="crm-pill pill-amber">${LX('لم يشترك','No sub')}</span>`);
@@ -4908,15 +4931,17 @@ function crmLeads(){
     <div class="metric"><div class="ml">💳 ${LX('اشتركوا','Subscribed')}</div><div class="mv" style="color:#166534">${cnt('subscribed')}</div></div></div>`;
   const FL=[['',LX('الكل','All')],['uncontacted',LX('🆕 ما تواصلنا','Not contacted')],['duetoday',LX('📞 متابعة اليوم','Follow today')],['noanswer',LX('🔁 لا رد','No answer')],['booked',LX('✅ حجزوا','Booked')],['noshow',LX('⚠️ حجز وما حضر','Booked, no-show')],['subscribed',LX('💳 اشتركوا','Subscribed')],['closed',LX('🚫 مغلق','Closed')]];
   const flBtns=FL.map(f=>`<button class="crm-subbtn ${(crmState.leadFilter||'')===f[0]?'on':''}" onclick="crmSetLeadFilter('${f[0]}')">${f[1]}</button>`).join('');
-  let list=withState.filter(crmLeadSearchMatch);
   const fil=crmState.leadFilter||'';
-  if(fil)list=list.filter(l=>fil==='duetoday'?(crmLeadDue(l)&&l._s!=='subscribed'):l._s===fil);
-  list=list.sort((a,b)=>String(b.createdOn||'').localeCompare(String(a.createdOn||'')));
-  const bar=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><input type="text" id="leadSearch" placeholder="🔍 ${LX('بحث بالاسم أو الجوال...','Search name/mobile...')}" value="${esc(crmState.leadSearch||'')}" oninput="crmSetLeadSearch(this.value)" style="flex:1;min-width:160px">${crmExpBtn('⬇️ Excel')}</div>
+  let base=withState.filter(crmLeadSearchMatch);
+  if(fil)base=base.filter(l=>fil==='duetoday'?(crmLeadDue(l)&&l._s!=='subscribed'):l._s===fil);
+  const page='leads';
+  const FCOLS=[null,null,{key:'city',acc:l=>l.cityName||cityLabel(l.city),label:LX('المدينة','City')},null,{key:'goal',acc:l=>l.goal||'',label:LX('الهدف','Goal')},{key:'status',acc:l=>l.status||'',label:LX('الحالة','State')},null,null,null];
+  let list=crmApplyColF(page,base,FCOLS).sort((a,b)=>String(b.createdOn||'').localeCompare(String(a.createdOn||'')));
+  const bar=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><input type="text" id="leadSearch" placeholder="🔍 ${LX('بحث بالاسم أو الجوال...','Search name/mobile...')}" value="${esc(crmState.leadSearch||'')}" oninput="crmSetLeadSearch(this.value)" style="flex:1;min-width:160px">${crmClearColFBtn(page)}${crmExpBtn('⬇️ Excel')}</div>
     <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:12px">${flBtns}</div>`;
   const stPill=l=>{const m={subscribed:['pill-green',LX('اشترك','Subscribed')],attended:['pill-green',LX('حضر الحصة','Attended')],booked:['pill-blue',LX('حجز حصة','Booked')],noshow:['pill-amber',LX('حجز وما حضر','No-show')],noanswer:['pill-amber',LX('لا رد','No answer')],closed:['pill-gray',LX('مغلق','Closed')],duetoday:['pill-red',LX('متابعة اليوم','Follow today')],uncontacted:['pill-gray',LX('جديد','New')],inprogress:['pill-blue',LX('قيد المتابعة','In progress')]};const v=m[l._s]||m.uncontacted;return `<span class="crm-pill ${v[0]}">${v[1]}</span>`;};
   const rows=list.slice(0,300).map(l=>{const log=l.callLog||[];const last=log[log.length-1];const due=crmLeadDue(l);return `<tr style="${due&&l._s!=='subscribed'?'background:#FEF2F2':''}"><td>${esc(l.name||'—')}</td><td dir=ltr>${esc(l.phone)}</td><td>${esc(l.cityName||cityLabel(l.city))}${l.zoneId!=null?' · Z'+l.zoneId:''}${l.geoEdited?' ✏️':''}${can('edit_lead_zone')?` <button class="btn" style="font-size:9px;padding:0px 5px;vertical-align:middle" onclick="crmLeadGeoForm('${esc(l.leadId)}')" title="${LX('تعديل المدينة/الزون','Edit city/zone')}">✏️</button>`:''}</td><td style="text-align:center">${(crmAge(l.dob)!=null)?crmAge(l.dob):'—'}</td><td style="font-size:11px;max-width:140px">${esc(l.goal||'—')}</td><td>${stPill(l)}${l.status?`<br><span style="font-size:10px;color:var(--g600)">${esc(l.status)}</span>`:''}</td><td style="font-size:11px;max-width:200px">${last?`${esc(last.note||'')}<br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}${log.length>1?` (${log.length})`:''}</span>`:'<span style="color:var(--g400)">—</span>'}</td><td style="white-space:nowrap">${l.nextFollow?esc(String(l.nextFollow).slice(0,10)):'—'}</td><td><button class="btn btn-primary" style="font-size:10px;padding:2px 8px" onclick="crmLeadForm('${esc(l.leadId)}')">📞 ${LX('متابعة','Contact')}</button></td></tr>`;}).join('');
-  return up+stats+bar+`<div class="crm-card"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة/الزون','City/Zone')}</th><th>${LX('العمر','Age')}</th><th>${LX('الهدف','Goal')}</th><th>${LX('الحالة','State')}</th><th>${LX('آخر متابعة','Last note')}</th><th>${LX('متابعة بتاريخ','Follow on')}</th><th></th></tr></thead><tbody>${rows}</tbody></table>${list.length>300?`<div class="crm-empty">${LX('عرض ٣٠٠ من','Showing 300 of')} ${list.length}</div>`:''}</div>`;
+  return up+stats+bar+`<div class="crm-card" style="overflow-x:auto"><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة/الزون','City/Zone')}</th><th>${LX('العمر','Age')}</th><th>${LX('الهدف','Goal')}</th><th>${LX('الحالة','State')}</th><th>${LX('آخر متابعة','Last note')}</th><th>${LX('متابعة بتاريخ','Follow on')}</th><th></th></tr>${crmColFilterRow(page,FCOLS,base)}</thead><tbody>${rows}</tbody></table>${list.length>300?`<div class="crm-empty">${LX('عرض ٣٠٠ من','Showing 300 of')} ${list.length}</div>`:''}</div>`;
 }
 function crmLeadForm(leadId){
   if(!can('manage_leads')){toast(LX('لا صلاحية','No permission'));return;}
