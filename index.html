@@ -3640,7 +3640,7 @@ let CRM_CFG={
   leadStatuses:['لا رد','تم الحجز','سيتم الحجز قريباً','الوقت غير مناسب','خارج مناطق التغطية','السعر مرتفع','غير مهتم'],
   addonPackages:['Minute Nutrition'] // باقات تُعطى مع الاشتراك ولا تُحتسب اشتراكاً/جديد/تجديد
 };
-let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:'',myDashPeriod:'month',myDashDrill:'',myDashDate:'',todoView:'mine',todoPerson:'',ndPeriod:'month',ndFrom:'',ndTo:''};
+let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:'',myDashPeriod:'month',myDashDrill:'',myDashDate:'',mdRef:'today',mdDate:'',todoView:'mine',todoPerson:'',ndPeriod:'month',ndFrom:'',ndTo:''};
 let _todoDrag=null;
 let crmHidden={};      // per-metric privacy hide state
 let crmPrivacyAll=false;
@@ -4092,43 +4092,56 @@ function crmDashWidgets(){
   ];
 }
 function crmMyDashDefault(){const all=crmDashWidgets().filter(crmWidgetAllowed);let s=all.filter(w=>w.group==='mine').slice(0,4).map(w=>w.key);if(!s.length)s=all.slice(0,4).map(w=>w.key);return s;}
+function crmMdRefDate(){
+  const sel=crmState.mdRef||'today';
+  if(sel==='date'&&crmState.mdDate){const d=new Date(crmState.mdDate+'T23:59:59');return isNaN(d)?new Date():d;}
+  const off=sel==='-1'?-1:sel==='-3'?-3:0;
+  const n=new Date();return new Date(n.getFullYear(),n.getMonth(),n.getDate()+off,23,59,59);
+}
+function crmSetMdRef(v){crmState.mdRef=v;crmState.mdDate='';crmRender();}
+function crmSetMdDate(v){crmState.mdDate=v||'';crmState.mdRef=v?'date':'today';crmRender();}
+function _dLE(s,ref){if(!s)return false;const d=new Date(String(s).slice(0,10)+'T00:00:00');return !isNaN(d)&&d.getTime()<=ref.getTime();}
+function _lastNote(arr){const x=(arr||[]);const e=x[x.length-1];return e?(e.note||e.reason||''):'';}
 function crmMyDash(){
-  const uname=currentUser?currentUser.username:'';
-  const all=crmDashWidgets();const byKey={};all.forEach(w=>byKey[w.key]=w);
-  const saved=(CRM_DASH[uname]||{}).widgets;
-  let sel=Array.isArray(saved)?saved.slice():crmMyDashDefault();
-  const cards=sel.map(k=>byKey[k]).filter(w=>w&&crmWidgetAllowed(w));
-  const drill=crmState.myDashDrill;
-  const grid=cards.length?`<div class="metric-grid">${cards.map(w=>{let r={};try{r=w.compute()||{};}catch(e){r={v:'—'};}const clickable=!!w.detail;const on=drill===w.key;return `<div class="metric" ${clickable?`onclick="crmDashDrillTo('${w.key}')" style="cursor:pointer;${on?'outline:2px solid var(--primary)':''}"`:''}><div class="ml">${w.ic||''} ${LX(w.ar,w.en)}${clickable?` <span style="color:var(--g300)">${on?'▲':'▾'}</span>`:''}</div><div class="mv"${r.color?` style="color:${r.color}"`:''}>${r.v}</div>${r.sub?`<div style="font-size:11px;color:var(--g400);margin-top:3px">${r.sub}</div>`:''}</div>`;}).join('')}</div>`:`<div class="crm-empty">${LX('لوحتك فارغة — اضغط «تخصيص» واختر الأرقام اللي تبغاها','Your board is empty — click “Customize” and pick the numbers you want')}</div>`;
-  // drill-down detail panel under the grid
-  let drillHtml='';
-  const dw=byKey[drill];
-  if(dw&&dw.detail&&crmWidgetAllowed(dw)){
-    if(dw.pii&&!can('view_customer_lists')){
-      drillHtml=`<div class="crm-card"><b>${LX(dw.ar,dw.en)}</b><div class="crm-empty">${LX('التفاصيل (أسماء/أرقام) تحتاج صلاحية «عرض قوائم العملاء التفصيلية»','Details (names/phones) need the “View detailed customer lists” permission')}</div></div>`;
-    }else{
-      let d={cols:[],rows:[]};try{d=dw.detail()||d;}catch(e){}
-      const rows=d.rows.slice(0,200);
-      drillHtml=`<div class="crm-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><b>${dw.ic||''} ${LX(dw.ar,dw.en)} (${d.rows.length})</b><button class="btn" style="font-size:11px;padding:2px 8px" onclick="crmDashDrillTo('${drill}')">✕ ${LX('إغلاق','Close')}</button></div>${rows.length?`<table class="crm-table"><thead><tr>${d.cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map((cell,i)=>`<td${i===1?' dir=ltr':''} style="font-size:12px">${esc(cell==null?'':cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>${d.rows.length>200?`<div class="crm-empty">${LX('عرض ٢٠٠ من','Showing 200 of')} ${d.rows.length}</div>`:''}`:`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div>`;
-    }
-  }
   const greet=currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'';
-  // personal sections (tasks + my follow-ups)
-  const myTasks=can('view_todo')?CRM_TODOS.filter(t=>crmTodoMine(t)&&(t.status||'todo')!=='done'):[];
-  const tasksCard=can('view_todo')?`<div class="crm-card"><div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">📋 ${LX('مهامي','My tasks')} (${myTasks.length})</h3><button class="btn" style="font-size:11px;padding:2px 9px" onclick="crmGo('todo')">${LX('فتح اللوحة','Open board')}</button></div>${myTasks.length?myTasks.slice(0,8).map(t=>{const col=TODO_COLS.find(c=>c[0]===(t.status||'todo'))||TODO_COLS[0];const pr=TODO_PRIOS.find(p=>p[0]===t.priority)||TODO_PRIOS[2];return `<div style="display:flex;justify-content:space-between;gap:6px;align-items:center;font-size:12px;padding:5px 0;border-bottom:1px solid var(--g100)"><span>${esc(t.title)} <span class="crm-pill ${pr[2]}" style="font-size:9px">${pr[1]}</span></span><span class="crm-pill pill-gray" style="flex-shrink:0;color:${col[2]}">${col[1]}</span></div>`;}).join(''):`<div class="crm-empty">${LX('لا مهام حالياً','No tasks right now')}</div>`}</div>`:'';
-  const myLeadsDue=can('manage_leads')?(LEADS||[]).filter(l=>(l.callLog||[]).some(e=>crmIsMine(e.by))&&crmLeadDue(l)&&crmLeadState(l)!=='subscribed'):[];
-  const myFreeDue=(can('manage_followups')||can('manage_complaints'))?(FREE_SESSIONS||[]).filter(f=>f.status==='confirmed'&&!crmIsConverted(f)&&(crmIsMine(f.calledBy)||(f.followLog||[]).some(e=>crmIsMine(e.by)))&&crmFollowDue(f)):[];
-  const fuN=myLeadsDue.length+myFreeDue.length;
-  const fuCard=(can('manage_leads')||can('manage_followups')||can('manage_complaints'))?`<div class="crm-card"><h3 style="margin:0 0 6px">📞 ${LX('متابعاتي اليوم','My follow-ups due')} (${fuN})</h3>${fuN?(myLeadsDue.slice(0,6).map(l=>`<div style="display:flex;justify-content:space-between;gap:6px;align-items:center;font-size:12px;padding:5px 0;border-bottom:1px solid var(--g100)"><span>🆕 ${esc(l.name||l.phone)} <span dir=ltr style="color:var(--g400)">${esc(l.phone)}</span></span><button class="btn btn-primary" style="font-size:10px;padding:1px 7px" onclick="crmLeadForm('${esc(l.leadId)}')">${LX('متابعة','Follow')}</button></div>`).join('')+myFreeDue.slice(0,6).map(f=>`<div style="display:flex;justify-content:space-between;gap:6px;align-items:center;font-size:12px;padding:5px 0;border-bottom:1px solid var(--g100)"><span>🎟 ${esc(f.name||f.phone)} <span dir=ltr style="color:var(--g400)">${esc(f.phone)}</span></span><button class="btn btn-primary" style="font-size:10px;padding:1px 7px" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">${LX('متابعة','Follow')}</button></div>`).join('')):`<div class="crm-empty">${LX('ما عندك متابعات مستحقّة اليوم 🎉','Nothing due today 🎉')}</div>`}</div>`:'';
-  const personal=(tasksCard||fuCard)?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:14px">${tasksCard}${fuCard}</div>`:'';
-  const hasDate=!!crmState.myDashDate;
-  const PER=[['today',LX('اليوم','Today')],['week',LX('أسبوع','Week')],['month',LX('هذا الشهر','This month')],['year',LX('السنة','Year')],['all',LX('الكل','All')]];
-  const perBtns=PER.map(p=>`<button class="crm-subbtn ${(!hasDate&&(crmState.myDashPeriod||'month')===p[0])?'on':''}" onclick="crmSetMyDashPeriod('${p[0]}')">${p[1]}</button>`).join('');
-  const dateBox=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">📅 ${LX('تاريخ محدد','Specific date')}:</span><input type="date" value="${esc(crmState.myDashDate||'')}" onchange="crmSetMyDashDate(this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px${hasDate?';outline:2px solid var(--primary)':''}"/>${hasDate?`<button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmSetMyDashDate('')">✕ ${LX('مسح','Clear')}</button>`:''}`;
-  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px"><h3 style="margin:0;font-size:16px">📊 ${LX('لوحتي','My Dashboard')}${greet?` — ${esc(greet)}`:''}</h3><button class="btn btn-primary" onclick="crmDashCustomize()">⚙️ ${LX('تخصيص','Customize')}</button></div>
-   <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('اضغط أي رقم لعرض تفاصيله تحت — والفلتر يغيّر فترة أرقام المبيعات والفري سشن.','Click any number to see its details below — the filter changes the period of sales & free-session numbers.')}</div>
-   ${personal}<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px"><h4 style="margin:0;font-size:13px;color:var(--g600)">📊 ${LX('أرقامي','My numbers')}</h4></div>
-   <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:12px"><span style="font-size:11px;color:var(--g600)">🗓</span>${perBtns}${dateBox}</div>${grid}${drillHtml}`;
+  const ref=crmMdRefDate();
+  const RF=[['today',LX('اليوم','Today')],['-1',LX('أمس','Yesterday')],['-3',LX('قبل ٣ أيام','3 days ago')]];
+  const isDate=(crmState.mdRef==='date'&&crmState.mdDate);
+  const rfBtns=RF.map(b=>`<button class="crm-subbtn ${(!isDate&&(crmState.mdRef||'today')===b[0])?'on':''}" onclick="crmSetMdRef('${b[0]}')">${b[1]}</button>`).join('');
+  const dateBox=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">📅 ${LX('تاريخ محدد','Specific date')}:</span><input type="date" value="${esc(crmState.mdDate||'')}" onchange="crmSetMdDate(this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px${isDate?';outline:2px solid var(--primary)':''}"/>`;
+  const canFree=can('manage_followups')||can('manage_complaints');
+  const leadsDue=can('manage_leads')?LEADS.filter(l=>l.nextFollow&&_dLE(l.nextFollow,ref)&&crmLeadState(l)!=='subscribed'):[];
+  const freeFollowDue=canFree?FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)&&f.followDate&&_dLE(f.followDate,ref)&&crmProvAllowed(f.trainer)):[];
+  const renew=[];
+  if(can('view_crm')||can('manage_followups'))CUSTOMERS.forEach(c=>{
+    const byCat={};crmRealTxns(c).forEach(t=>{if((t.paid||0)<=0||t.refunded)return;const k=t.cat||t.item||'?';if(!byCat[k]||String(crmEnd(t))>String(crmEnd(byCat[k])))byCat[k]=t;});
+    Object.values(byCat).forEach(t=>{
+      if(!crmProvAllowed(t.trainer))return;
+      const end=new Date(String(crmEnd(t)).slice(0,10)+'T00:00:00');if(isNaN(end))return;
+      const dl=Math.round((end-ref)/86400000);
+      if(dl<=7&&dl>=-30)renew.push({c,t,dl});
+    });
+  });
+  renew.sort((a,b)=>a.dl-b.dl);
+  const freeNoSub=(canFree||can('view_dashboard'))?FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)&&_dLE(f.scheduledDate,ref)&&crmProvAllowed(f.trainer)):[];
+  const leadRow=l=>{const due=crmLeadDue(l);return `<div class="crm-card" style="padding:9px 11px;margin-bottom:7px;border-${lang==='ar'?'right':'left'}:4px solid ${due?'#DC2626':'#1D4ED8'}">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div><b>${esc(l.name||'—')}</b> <span dir=ltr style="color:var(--g500);font-size:12px">${esc(l.phone)}</span><div style="font-size:11px;color:var(--g500);margin-top:2px">${esc(l.cityName||cityLabel(l.city))}${l.zoneId!=null?' · Z'+l.zoneId:''}${l.goal?' · '+esc(l.goal):''} · ${LX('الحالة','State')}: ${esc(l.status||crmLeadState(l))}</div>${_lastNote(l.callLog)?`<div style="font-size:11px;color:var(--g600);margin-top:3px">📝 ${esc(_lastNote(l.callLog))}</div>`:''}<div style="font-size:10px;color:${due?'#DC2626':'var(--g400)'};margin-top:2px">⏰ ${LX('متابعة','follow')}: ${esc(String(l.nextFollow||'').slice(0,10))}</div></div>
+    <button class="btn btn-primary" style="font-size:11px;padding:3px 9px;flex-shrink:0" onclick="crmLeadForm('${esc(l.leadId)}')">📞 ${LX('متابعة + نوت','Follow + note')}</button></div></div>`;};
+  const freeRow=f=>{const due=crmFollowDue(f);return `<div class="crm-card" style="padding:9px 11px;margin-bottom:7px;border-${lang==='ar'?'right':'left'}:4px solid ${due?'#DC2626':'#D97706'}">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div><b>${esc(f.name||'—')}</b> <span dir=ltr style="color:var(--g500);font-size:12px">${esc(f.phone)}</span><div style="font-size:11px;color:var(--g500);margin-top:2px">${cityLabel(f.city)}${f.zoneId!=null?' · Z'+f.zoneId:''} · 🎟 ${esc(String(f.scheduledDate||'').slice(0,10))}${f.trainer?' · '+esc(f.trainer):''}</div>${_lastNote(f.followLog)?`<div style="font-size:11px;color:var(--g600);margin-top:3px">📝 ${esc(_lastNote(f.followLog))}</div>`:''}${f.followDate?`<div style="font-size:10px;color:${due?'#DC2626':'var(--g400)'};margin-top:2px">⏰ ${LX('متابعة','follow')}: ${esc(String(f.followDate).slice(0,10))}</div>`:''}</div>
+    <button class="btn btn-primary" style="font-size:11px;padding:3px 9px;flex-shrink:0" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">➕ ${LX('متابعة + نوت','Follow + note')}</button></div></div>`;};
+  const renewRow=e=>{const t=e.t,c=e.c;const txt=e.dl<0?LX('انتهى قبل ','expired ')+(-e.dl)+LX(' يوم',' d ago'):(e.dl===0?LX('ينتهي اليوم','expires today'):LX('باقٍ ','in ')+e.dl+LX(' يوم',' d'));return `<div class="crm-card" style="padding:9px 11px;margin-bottom:7px;border-${lang==='ar'?'right':'left'}:4px solid ${e.dl<0?'#991B1B':'#DC2626'}">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div><b>${esc(c.name||'—')}</b> <span dir=ltr style="color:var(--g500);font-size:12px">${esc(c.phone)}</span><div style="font-size:11px;color:var(--g500);margin-top:2px">${esc(t.cat||t.item)}${t.trainer?' · '+esc(t.trainer):''} · ${crmFmtExpiry(crmEnd(t))} <span style="color:${e.dl<0?'#991B1B':'#DC2626'}">(${txt})</span></div>${_lastNote(t.renewLog)?`<div style="font-size:11px;color:var(--g600);margin-top:3px">📝 ${esc(_lastNote(t.renewLog))}</div>`:''}</div>
+    <button class="btn btn-primary" style="font-size:11px;padding:3px 9px;flex-shrink:0" onclick="crmRenewFollowForm('${esc(c.phone)}','${esc(t.inv)}')">➕ ${LX('متابعة + نوت','Follow + note')}</button></div></div>`;};
+  const followItems=leadsDue.map(leadRow).join('')+freeFollowDue.map(freeRow).join('');
+  const followCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">📞 ${LX('متابعة اليوم','Follow-ups due')} <span class="crm-pill pill-blue">${leadsDue.length+freeFollowDue.length}</span></h3>${followItems||`<div class="crm-empty">${LX('لا متابعات مجدولة لهذا اليوم','No scheduled follow-ups for this day')}</div>`}</div>`;
+  const renewCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">🔔 ${LX('اشتراكات منتهية تحتاج تجديد','Subscriptions needing renewal')} <span class="crm-pill pill-red">${renew.length}</span></h3>${renew.length?renew.map(renewRow).join(''):`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div>`;
+  const noSubCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">🎟 ${LX('أخذوا فري سشن وما اشتركوا','Took a free session, no subscription')} <span class="crm-pill pill-amber">${freeNoSub.length}</span></h3>${freeNoSub.length?freeNoSub.map(freeRow).join(''):`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div>`;
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px"><h3 style="margin:0;font-size:16px">📋 ${LX('لوحتي — مهام اليوم','My board — today')}${greet?` · ${esc(greet)}`:''}</h3></div>
+   <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('كل اللي تشتغل عليه اليوم — تابِع واكتب النوت من هنا مباشرة. غيّر اليوم لمراجعة المتأخرات.','Everything to handle today — follow up and write the note right here. Change the day to review past items.')}</div>
+   <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:14px">🗓 ${rfBtns}${dateBox}</div>
+   ${followCard}
+   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:12px">${renewCard}${noSubCard}</div>`;
 }
 function crmDashCustomize(){
   const uname=currentUser?currentUser.username:'';
