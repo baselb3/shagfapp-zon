@@ -739,6 +739,9 @@ const ALL_PERMISSIONS = [
   {key:'view_my_dashboard',ar:'لوحتي (داش بورد الموظف)',    en:'My Dashboard'},
   {key:'export_data',    ar:'تصدير/تحميل Excel',           en:'Export / Download Excel'},
   {key:'view_customer_lists',ar:'عرض قوائم العملاء التفصيلية',en:'View Detailed Customer Lists'},
+  {key:'view_new_dashboard',ar:'داش بورد «جديد» (تحويل التجارب)',en:'New (Conversion) Dashboard'},
+  {key:'view_todo',      ar:'المهام (To-Do) — مهامي',      en:'Tasks (To-Do) — my tasks'},
+  {key:'manage_all_todos',ar:'إشراف على كل المهام (قراءة)',  en:'Oversee all tasks (read-only)'},
 ];
 
 // Default users - admin password + one viewer
@@ -3266,8 +3269,9 @@ function renderUsers(){
 // Permissions grouped by area so granting an employee is organized (Sales / CS / ...)
 const PERM_GROUPS=[
   {ar:'🗺 الزون والخريطة والمدربات',en:'Zones, Map & Coaches',keys:['view_map','view_coaches','edit_coaches','delete_coaches','view_zones','edit_zones','delete_zones','view_stats','view_emojis','edit_emojis','view_prices','edit_prices','view_cities','edit_cities','import_export','view_history','clear_history','manage_teams']},
-  {ar:'🛒 المبيعات',en:'Sales',keys:['view_crm','view_dashboard','edit_customers','delete_customers','view_customer_lists','export_data']},
+  {ar:'🛒 المبيعات',en:'Sales',keys:['view_crm','view_dashboard','view_new_dashboard','edit_customers','delete_customers','view_customer_lists','export_data']},
   {ar:'🎧 خدمة العملاء',en:'Customer Service',keys:['manage_complaints','manage_followups','manage_leads','upload_data','edit_lead_zone']},
+  {ar:'📋 المهام (To-Do)',en:'Tasks',keys:['view_todo','manage_all_todos']},
   {ar:'📊 لوحتي',en:'My Dashboard',keys:['view_my_dashboard']},
   {ar:'⚙️ الإدارة',en:'Admin',keys:['manage_users']},
 ];
@@ -3598,6 +3602,7 @@ let LEADS=[];        // app registrations funnel (customers.csv): each tracked t
 let CRM_UPLOADS=[];  // upload audit log: [{id,page,by,at,total,added,dupe,skipped,note}]
 let CRM_NOTIFS={};   // { username: [ {id,text,from,at,read,sec,sub} ] }
 let CRM_DASH={};     // { username: { widgets:[key,...] } } — each employee's chosen dashboard widgets
+let CRM_TODOS=[];    // kanban tasks: [{id,title,desc,type,priority,status,assignees:[u],createdBy,...}]
 let CRM_SVC={complaints:[],suggestions:[],desk:[],followups:[]};
 let CRM_CFG={
   noRenewReasons:['السعر','غيّر النادي','ظروف صحية','انتقل لمدينة أخرى','غير راضٍ عن الخدمة','تعذّر التواصل'],
@@ -3608,7 +3613,8 @@ let CRM_CFG={
   leadStatuses:['لا رد','تم الحجز','سيتم الحجز قريباً','الوقت غير مناسب','خارج مناطق التغطية','السعر مرتفع','غير مهتم'],
   addonPackages:['Minute Nutrition'] // باقات تُعطى مع الاشتراك ولا تُحتسب اشتراكاً/جديد/تجديد
 };
-let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:'',myDashPeriod:'month',myDashDrill:'',myDashDate:''};
+let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:'',myDashPeriod:'month',myDashDrill:'',myDashDate:'',todoView:'mine',todoPerson:'',ndPeriod:'month',ndFrom:'',ndTo:''};
+let _todoDrag=null;
 let crmHidden={};      // per-metric privacy hide state
 let crmPrivacyAll=false;
 
@@ -3717,6 +3723,10 @@ async function loadCrmData(){
     const dh=await db.collection('app').doc('crm_dashboards').get();
     CRM_DASH=dh.exists?(dh.data().map||{}):{};
   }catch(e){console.error('load crm_dashboards',e);}
+  try{
+    const td=await db.collection('app').doc('crm_todos').get();
+    CRM_TODOS=td.exists?(td.data().list||[]):[];
+  }catch(e){console.error('load crm_todos',e);}
 }
 // record an upload event to the audit log
 function crmLogUpload(page,info){
@@ -3854,6 +3864,8 @@ function crmNavDefs(){
   const d=[];
   if(can('view_dashboard'))d.push({key:'dash',label:LX('📊 داش بورد','📊 Dashboard')});
   if(can('view_my_dashboard'))d.push({key:'mydash',label:LX('📊 لوحتي','📊 My Dashboard')});
+  if(can('view_new_dashboard'))d.push({key:'newdash',label:LX('🆕 جديد','🆕 New')});
+  if(can('view_todo')||can('manage_all_todos'))d.push({key:'todo',label:LX('📋 المهام','📋 Tasks')});
   if(can('view_crm'))d.push({key:'sales',label:LX('🛒 مبيعات','🛒 Sales'),subs:[['new',LX('جديد','New')],['renew',LX('تجديد','Renewal')],['customers',LX('كل العملاء','All Customers')],['followup',LX('المتابعة','Follow-up')]]});
   if(can('manage_complaints')||can('manage_followups')||can('manage_leads')){
     const ssubs=[];
@@ -3898,6 +3910,8 @@ function crmRender(){
   const b=document.getElementById('crmBody');if(!b)return;
   if(crmState.sec==='dash')b.innerHTML=can('view_dashboard')?crmDashboard():`<div class="crm-empty">${LX('ليس لديك صلاحية عرض الداش بورد','You don’t have dashboard permission')}</div>`;
   else if(crmState.sec==='mydash')b.innerHTML=can('view_my_dashboard')?crmMyDash():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
+  else if(crmState.sec==='newdash')b.innerHTML=can('view_new_dashboard')?crmNewDash():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
+  else if(crmState.sec==='todo')b.innerHTML=(can('view_todo')||can('manage_all_todos'))?crmTodo():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
   else if(crmState.sec==='sales'){
     if(crmState.sub==='customers')b.innerHTML=crmCustomers();
     else if(crmState.sub==='followup')b.innerHTML=crmFollowup();
@@ -4516,7 +4530,7 @@ function crmFollowup(){
   html+=`<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:10px">${FFF.map(b=>`<button class="crm-subbtn ${(crmState.followFreeF||'')===b[0]?'on':''}" onclick="crmSetFollowFreeF('${b[0]}')">${b[1]}</button>`).join('')}<input type="date" value="${esc(crmState.followFreeDate||'')}" onchange="crmSetFollowFreeDate(this.value)" style="width:auto;font-size:11px;padding:3px 6px"></div>`;
   const pf=pending.filter(crmFreeFollowDateMatch);
   const psort=pf.slice().sort((a,b)=>(crmFollowDue(b)?1:0)-(crmFollowDue(a)?1:0));
-  html+=pf.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الحصة','Session')}</th><th>${LX('متابعة بتاريخ','Follow on')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr></thead><tbody>${psort.map(f=>{const due=crmFollowDue(f);const log=f.followLog||[];const last=log[log.length-1];return `<tr style="${due?'background:#FEF2F2':''}"><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}</td><td>${cityLabel(f.city)}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').slice(0,10))}</td><td style="white-space:nowrap">${f.followDate?`${esc(String(f.followDate).slice(0,10))} ${due?'<span class="crm-pill pill-red">'+LX('اليوم','today')+'</span>':''}`:'—'}</td><td style="max-width:220px">${last?`<span style="font-size:11px">${esc(last.note||last.reason||'')}</span><br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}${log.length>1?` · (${log.length} ${LX('متابعات','follow-ups')})`:''}</span>`:'<span style="color:var(--g400)">'+LX('لم تتم متابعة بعد','No follow-up yet')+'</span>'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد فري سشن معلّق — ارفع الحصص من «خدمة العملاء»','No pending free sessions — upload from “Customer Service”')}</div>`;
+  html+=pf.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الحصة','Session')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('متابعة بتاريخ','Follow on')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr></thead><tbody>${psort.map(f=>{const due=crmFollowDue(f);const log=f.followLog||[];const last=log[log.length-1];return `<tr style="${due?'background:#FEF2F2':''}"><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}</td><td>${cityLabel(f.city)}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').slice(0,10))}</td><td>${esc(f.trainer||'—')}</td><td style="white-space:nowrap">${f.followDate?`${esc(String(f.followDate).slice(0,10))} ${due?'<span class="crm-pill pill-red">'+LX('اليوم','today')+'</span>':''}`:'—'}</td><td style="max-width:220px">${last?`<span style="font-size:11px">${esc(last.note||last.reason||'')}</span><br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}${log.length>1?` · (${log.length} ${LX('متابعات','follow-ups')})`:''}</span>`:'<span style="color:var(--g400)">'+LX('لم تتم متابعة بعد','No follow-up yet')+'</span>'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد فري سشن معلّق — ارفع الحصص من «خدمة العملاء»','No pending free sessions — upload from “Customer Service”')}</div>`;
   html+=`</div>`;
   return html;
 }
@@ -4944,6 +4958,153 @@ function crmLeadSave(leadId){
     }
     toast('💾 '+LX('تم','Saved'));finish();
   }).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
+// ===================== TO-DO BOARD (kanban) =====================
+const TODO_COLS=[['todo',LX('📋 للعمل','To do'),'#92400E'],['doing',LX('🔧 قيد التنفيذ','Doing'),'#1D4ED8'],['done',LX('✅ مُنجزة','Done'),'#166534']];
+const TODO_PRIOS=[['urgent',LX('عاجلة','Urgent'),'pill-red'],['high',LX('مهمة','High'),'pill-amber'],['normal',LX('عادية','Normal'),'pill-gray']];
+function crmMe1(){return currentUser?currentUser.username:'';}
+function crmUserName(u){const x=USERS&&USERS[u];return x?(lang==='ar'?x.name_ar:x.name_en):u;}
+function crmTodoMine(t){const me=crmMe1();return t.createdBy===me||(t.assignees||[]).includes(me);}
+function crmTodoCanEdit(t){return isSuperAdmin()||crmTodoMine(t);}
+function crmTodoVisible(){
+  if(crmState.todoView==='all'&&can('manage_all_todos')){
+    let arr=CRM_TODOS.slice();
+    if(crmState.todoPerson)arr=arr.filter(t=>t.createdBy===crmState.todoPerson||(t.assignees||[]).includes(crmState.todoPerson));
+    return arr;
+  }
+  return CRM_TODOS.filter(crmTodoMine);
+}
+function crmTodo(){
+  const oversight=crmState.todoView==='all'&&can('manage_all_todos');
+  const vis=crmTodoVisible();
+  const cnt=s=>vis.filter(t=>(t.status||'todo')===s).length;
+  const stats=`<div class="metric-grid">${TODO_COLS.map(c=>`<div class="metric"><div class="ml">${c[1]}</div><div class="mv" style="color:${c[2]}">${cnt(c[0])}</div></div>`).join('')}</div>`;
+  // toolbar
+  const userOpts=['<option value="">'+LX('كل الأشخاص','Everyone')+'</option>'].concat(Object.keys(USERS||{}).map(u=>`<option value="${u}" ${crmState.todoPerson===u?'selected':''}>${esc(crmUserName(u))}</option>`)).join('');
+  const viewToggle=can('manage_all_todos')?`<div style="display:flex;gap:4px"><button class="crm-subbtn ${!oversight?'on':''}" onclick="crmTodoSetView('mine')">🙋 ${LX('مهامي','My tasks')}</button><button class="crm-subbtn ${oversight?'on':''}" onclick="crmTodoSetView('all')">👁 ${LX('إشراف (الكل)','Oversee (all)')}</button></div>`:'';
+  const personFilter=oversight?`<select onchange="crmTodoSetPerson(this.value)" style="font-size:11px;padding:4px 8px;border-radius:6px;border:1px solid var(--g300)">${userOpts}</select>`:'';
+  const addBtn=(!oversight&&can('view_todo'))?`<button class="btn btn-primary" onclick="crmTodoForm()">➕ ${LX('مهمة جديدة','New task')}</button>`:'';
+  const bar=`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px"><h3 style="margin:0;font-size:16px">📋 ${LX('المهام','Tasks')}</h3><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${viewToggle}${personFilter}${addBtn}</div></div>
+    <div style="font-size:11px;color:var(--g400);margin-bottom:10px">${oversight?LX('عرض إشرافي لكل المهام — للقراءة فقط.','Oversight view of all tasks — read-only.'):LX('تشوف مهامك والمهام اللي أنت مكلّف فيها. اسحب البطاقة بين الأعمدة.','You see your tasks and tasks you’re assigned to. Drag a card between columns.')}</div>`;
+  // columns
+  const cols=TODO_COLS.map(col=>{
+    const items=vis.filter(t=>(t.status||'todo')===col[0]).sort((a,b)=>(TODO_PRIOS.findIndex(p=>p[0]===a.priority))-(TODO_PRIOS.findIndex(p=>p[0]===b.priority)));
+    const cards=items.map(t=>{
+      const pr=TODO_PRIOS.find(p=>p[0]===t.priority)||TODO_PRIOS[2];
+      const who=(t.assignees||[]).map(crmUserName).join('، ')||'—';
+      const canE=!oversight&&crmTodoCanEdit(t);
+      const moveSel=canE?`<select onchange="crmTodoMove('${t.id}',this.value)" style="font-size:10px;padding:1px 3px;border-radius:5px;border:1px solid var(--g300)">${TODO_COLS.map(c=>`<option value="${c[0]}" ${(t.status||'todo')===c[0]?'selected':''}>${c[1]}</option>`).join('')}</select>`:'';
+      return `<div class="todo-card" ${canE?`draggable="true" ondragstart="_todoDrag='${t.id}'"`:''} style="background:#fff;border:1px solid var(--g200);border-${lang==='ar'?'right':'left'}:4px solid ${col[2]};border-radius:8px;padding:9px 11px;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);${canE?'cursor:grab':''}">
+        <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start"><div style="font-weight:700;font-size:13px">${esc(t.title)}</div><span class="crm-pill ${pr[2]}" style="flex-shrink:0">${pr[1]}</span></div>
+        ${t.desc?`<div style="font-size:11px;color:var(--g600);margin-top:3px">${esc(t.desc)}</div>`:''}
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">${t.type?`<span class="crm-pill pill-blue">🏷 ${esc(t.type)}</span>`:''}<span class="crm-pill pill-gray">👤 ${esc(who)}</span></div>
+        <div style="font-size:9px;color:var(--g400);margin-top:4px">${LX('بواسطة','by')} ${esc(crmUserName(t.createdBy))} · ${esc(t.at||'')}</div>
+        <div style="display:flex;gap:4px;margin-top:6px;align-items:center">${moveSel}${canE?`<button class="btn" style="font-size:10px;padding:1px 6px" onclick="crmTodoForm('${t.id}')">✏️</button><button class="btn btn-danger" style="font-size:10px;padding:1px 6px" onclick="crmTodoDelete('${t.id}')">🗑</button>`:''}</div>
+      </div>`;
+    }).join('')||`<div style="font-size:11px;color:var(--g300);text-align:center;padding:14px 0">—</div>`;
+    return `<div style="flex:1;min-width:210px;background:var(--g50);border-radius:10px;padding:8px" ${!oversight?`ondragover="event.preventDefault()" ondrop="if(_todoDrag)crmTodoMove(_todoDrag,'${col[0]}');_todoDrag=null"`:''}>
+      <div style="font-weight:800;font-size:13px;color:${col[2]};margin-bottom:8px;text-align:center">${col[1]} (${items.length})</div>${cards}</div>`;
+  }).join('');
+  return bar+stats+`<div style="display:flex;gap:10px;align-items:flex-start;overflow-x:auto">${cols}</div>`;
+}
+function crmTodoSetView(v){crmState.todoView=v;crmRender();}
+function crmTodoSetPerson(p){crmState.todoPerson=p;crmRender();}
+function crmTodoForm(id){
+  if(!can('view_todo')){toast(LX('لا صلاحية','No permission'));return;}
+  const t=id?CRM_TODOS.find(x=>String(x.id)===String(id)):null;
+  if(id&&t&&!crmTodoCanEdit(t)){toast(LX('لا صلاحية للتعديل','No edit permission'));return;}
+  const ex=t||{};
+  const prioOpts=TODO_PRIOS.map(p=>`<option value="${p[0]}" ${(ex.priority||'normal')===p[0]?'selected':''}>${p[1]}</option>`).join('');
+  const users=Object.keys(USERS||{});
+  const asg=ex.assignees||[];
+  const userBoxes=users.map(u=>`<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;border:1px solid var(--g200);border-radius:14px;padding:3px 9px;cursor:pointer;margin:2px"><input type="checkbox" class="todo-asg" value="${u}" ${asg.includes(u)?'checked':''} style="width:auto"/> ${esc(crmUserName(u))}</label>`).join('');
+  openModal(`<h3>${id?'✏️ '+LX('تعديل مهمة','Edit task'):'➕ '+LX('مهمة جديدة','New task')}</h3>
+    <label class="form-label">${LX('عنوان المهمة','Task title')} *</label><input id="td-title" value="${esc(ex.title||'')}"/>
+    <label class="form-label">${LX('تفاصيل','Details')}</label><textarea id="td-desc" rows="2">${esc(ex.desc||'')}</textarea>
+    <div style="display:flex;gap:8px"><div style="flex:1"><label class="form-label">${LX('الأولوية','Priority')}</label><select id="td-prio">${prioOpts}</select></div><div style="flex:1"><label class="form-label">${LX('نوع المهمة (تاق)','Type / tag')}</label><input id="td-type" value="${esc(ex.type||'')}" placeholder="${LX('تسويق، متابعة...','marketing, follow-up...')}"/></div></div>
+    <label class="form-label">${LX('إسناد إلى (شخص أو أكثر)','Assign to (one or more)')}</label><div style="max-height:120px;overflow:auto;border:1px solid var(--g200);border-radius:6px;padding:6px">${userBoxes||'<span style="font-size:12px;color:var(--g400)">—</span>'}</div>
+    <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-primary" style="flex:1" onclick="crmTodoSave('${id||''}')">💾 ${LX('حفظ','Save')}</button><button class="btn" style="flex:1" onclick="closeModal()">${LX('إلغاء','Cancel')}</button></div>`);
+}
+function crmTodoSave(id){
+  if(!can('view_todo')){toast(LX('لا صلاحية','No permission'));return;}
+  const title=(document.getElementById('td-title').value||'').trim();if(!title){toast(LX('اكتب عنوان المهمة','Enter a task title'));return;}
+  const desc=(document.getElementById('td-desc').value||'').trim();
+  const priority=document.getElementById('td-prio').value;
+  const type=(document.getElementById('td-type').value||'').trim();
+  const assignees=[...document.querySelectorAll('.todo-asg:checked')].map(c=>c.value);
+  const me=crmMe1();const now=new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'});
+  const old=id?CRM_TODOS.find(x=>String(x.id)===String(id)):null;
+  const prevAsg=old?(old.assignees||[]):[];
+  const rec=old?Object.assign({},old,{title,desc,priority,type,assignees,updatedAt:now}):{id:'t'+Date.now()+Math.floor(performance.now()),title,desc,priority,type,assignees,status:'todo',createdBy:me,createdByName:crmUserName(me),at:now};
+  mutateListDoc('crm_todos',cur=>old?cur.map(x=>String(x.id)===String(id)?rec:x):cur.concat(rec)).then(n=>{
+    CRM_TODOS=n;closeModal();toast('💾 '+LX('تم','Saved'));
+    // notify newly-assigned users (not me)
+    assignees.filter(u=>u!==me&&!prevAsg.includes(u)).forEach(u=>crmNotify(u,LX('مهمة جديدة: ','New task: ')+title,'todo','todo'));
+    crmRender();
+  }).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
+function crmTodoMove(id,status){
+  const t=CRM_TODOS.find(x=>String(x.id)===String(id));if(!t||!crmTodoCanEdit(t)){toast(LX('لا صلاحية','No permission'));return;}
+  mutateListDoc('crm_todos',cur=>cur.map(x=>String(x.id)===String(id)?Object.assign({},x,{status}):x)).then(n=>{CRM_TODOS=n;crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
+function crmTodoDelete(id){
+  const t=CRM_TODOS.find(x=>String(x.id)===String(id));if(!t||!crmTodoCanEdit(t)){toast(LX('لا صلاحية','No permission'));return;}
+  if(!confirm(LX('حذف هذه المهمة؟','Delete this task?')))return;
+  mutateListDoc('crm_todos',cur=>cur.filter(x=>String(x.id)!==String(id))).then(n=>{CRM_TODOS=n;toast('🗑 '+LX('حُذفت','Deleted'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+}
+// ===================== NEW (CONVERSION) DASHBOARD =====================
+function crmNdMatch(f){const d=crmSchedDate(f);if(!d)return crmState.ndPeriod==='all';const ms=d.getTime();
+  if(crmState.ndFrom||crmState.ndTo){const day=crmYMD(d);if(crmState.ndFrom&&day<crmState.ndFrom)return false;if(crmState.ndTo&&day>crmState.ndTo)return false;return true;}
+  const p=crmState.ndPeriod||'month';if(p==='all')return true;const n=new Date();
+  if(p==='today')return d.toDateString()===n.toDateString();
+  if(p==='week'){const w=new Date();w.setDate(w.getDate()-7);return d>=w;}
+  if(p==='month')return d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth();
+  return true;}
+function crmNewDash(){
+  // free sessions actually given (confirmed) within the period
+  const given=FREE_SESSIONS.filter(f=>f.status==='confirmed'&&crmNdMatch(f));
+  const subscribed=given.filter(crmIsConverted);
+  const notSub=given.filter(f=>!crmIsConverted(f));
+  const rate=given.length?Math.round(subscribed.length/given.length*100):0;
+  // per coach (trainer) tallies
+  const byCoach={};given.forEach(f=>{const k=f.trainer||'—';if(!byCoach[k])byCoach[k]={given:0,sub:0};byCoach[k].given++;if(crmIsConverted(f))byCoach[k].sub++;});
+  const coaches=Object.entries(byCoach).map(([k,v])=>({coach:k,given:v.given,sub:v.sub,nosub:v.given-v.sub,rate:v.given?Math.round(v.sub/v.given*100):0}));
+  const topGiver=coaches.slice().sort((a,b)=>b.given-a.given)[0];
+  const topConv=coaches.slice().sort((a,b)=>b.sub-a.sub||b.rate-a.rate)[0];
+  const topNoSub=coaches.slice().sort((a,b)=>b.nosub-a.nosub)[0];
+  const fromV=esc(crmState.ndFrom||''),toV=esc(crmState.ndTo||'');
+  const PER=[['today',LX('اليوم','Today')],['week',LX('أسبوع','Week')],['month',LX('هذا الشهر','This month')],['all',LX('الكل','All')]];
+  const hasRange=!!(crmState.ndFrom||crmState.ndTo);
+  const perBtns=PER.map(p=>`<button class="crm-subbtn ${(!hasRange&&(crmState.ndPeriod||'month')===p[0])?'on':''}" onclick="crmSetNdPeriod('${p[0]}')">${p[1]}</button>`).join('');
+  const M=(ic,l,v,col,sub)=>`<div class="metric"><div class="ml">${ic} ${l}</div><div class="mv"${col?` style="color:${col}"`:''}>${v}</div>${sub?`<div style="font-size:11px;color:var(--g400);margin-top:3px">${sub}</div>`:''}</div>`;
+  const coachCard=(title,ic,c,metric)=>`<div class="crm-card"><h3>${ic} ${title}</h3>${c?`<div style="font-size:15px;font-weight:800">${esc(c.coach)}</div><div style="font-size:12px;color:var(--g600);margin-top:3px">${LX('أعطت','Gave')} ${c.given} · ${LX('اشترك','Subscribed')} ${c.sub} · ${LX('ما اشترك','Not subscribed')} ${c.nosub} · ${c.rate}%</div>`:`<div class="crm-empty">—</div>`}</div>`;
+  const coachRows=coaches.sort((a,b)=>b.given-a.given).map(c=>`<tr><td>${esc(c.coach)}</td><td>${c.given}</td><td style="color:#166534;font-weight:700">${c.sub}</td><td style="color:#B45309">${c.nosub}</td><td>${c.rate}%</td></tr>`).join('');
+  return `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px"><h3 style="margin:0;font-size:16px">🆕 ${LX('جديد — تحويل التجارب لاشتراكات','New — trial → subscription conversion')}</h3>${can('export_data')?`<button class="btn" style="font-size:11px;padding:3px 10px" onclick="crmNdExport()">⬇️ Excel</button>`:''}</div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--g600)">🗓</span>${perBtns}
+      <span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">${LX('من','From')}</span><input type="date" value="${fromV}" onchange="crmSetNdRange(this.value,null)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px"/>
+      <span style="font-size:11px;color:var(--g600)">${LX('إلى','To')}</span><input type="date" value="${toV}" onchange="crmSetNdRange(null,this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px"/>
+      ${hasRange?`<button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmSetNdRange('','')">✕ ${LX('مسح','Clear')}</button>`:''}</div>
+    <div class="metric-grid">
+      ${M('🎟',LX('جرّبوا (حصص أُعطيت)','Tried (sessions given)'),given.length)}
+      ${M('✅',LX('جرّبوا واشتركوا','Tried & subscribed'),subscribed.length,'#166534')}
+      ${M('🚫',LX('جرّبوا وما اشتركوا','Tried, not subscribed'),notSub.length,'#B45309')}
+      ${M('📈',LX('نسبة التحويل','Conversion rate'),rate+'%','#1D4ED8')}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:4px">
+      ${coachCard(LX('أكثر مدربة أعطت حصص','Top coach by sessions given'),'🏅',topGiver)}
+      ${coachCard(LX('أكثر مدربة تحوّلت لاشتراكات','Top coach by subscriptions'),'💳',topConv)}
+      ${coachCard(LX('أكثر مدربة أعطت وما اشتركوا','Most given but no subscription'),'⚠️',topNoSub)}
+    </div>
+    ${can('view_customer_lists')?`<div class="crm-card"><h3>👟 ${LX('تفصيل حسب مقدم الخدمة','Breakdown by provider')}</h3><table class="crm-table"><thead><tr><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('أعطت','Given')}</th><th>${LX('اشترك','Subscribed')}</th><th>${LX('ما اشترك','Not sub')}</th><th>${LX('التحويل','Conv.')}</th></tr></thead><tbody>${coachRows||`<tr><td colspan=5 class="crm-empty">—</td></tr>`}</tbody></table></div>`:''}`;
+}
+function crmSetNdPeriod(p){crmState.ndPeriod=p;crmState.ndFrom='';crmState.ndTo='';crmRender();}
+function crmSetNdRange(f,t){if(f!==null)crmState.ndFrom=f;if(t!==null)crmState.ndTo=t;crmRender();}
+function crmNdExport(){
+  if(!can('export_data')){toast(LX('لا صلاحية','No permission'));return;}
+  const given=FREE_SESSIONS.filter(f=>f.status==='confirmed'&&crmNdMatch(f));
+  const rows=[[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('موعد الحصة','Session date'),LX('مقدم الخدمة','Provider'),LX('اشترك؟','Subscribed?')]];
+  given.forEach(f=>rows.push([f.name,f.phone,String(f.scheduledDate||'').slice(0,10),f.trainer||'',crmIsConverted(f)?LX('نعم','Yes'):LX('لا','No')]));
+  crmExportXlsx(rows,'new-conversion.xlsx');
 }
 // ---------- إعدادات الـ CRM ----------
 function crmSettings(){
