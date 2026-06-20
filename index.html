@@ -4215,21 +4215,39 @@ function crmDrillBody(k){
   if(k==='followToday')return tbl([H.cust,H.mob,H.fdate,H.nosub],FREE_SESSIONS.filter(f=>f.status!=='cancelled'&&!crmIsConverted(f)&&crmFollowDue(f)).map(f=>`<tr><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}</td><td>${esc(String(f.followDate||'').slice(0,10))}</td><td>${esc(f.notSubReason||'—')}</td></tr>`));
   return '<div class="crm-empty">—</div>';
 }
-// ---------- reusable Excel-style per-column filters (dropdown per categorical column) ----------
+// ---------- reusable Excel-style per-column filters (MULTI-select checkbox menu per column) ----------
+let _colVals={}; // cache of distinct values per page|col, populated when the filter row renders
 function crmColF(page){if(!crmState.colF)crmState.colF={};if(!crmState.colF[page])crmState.colF[page]={};return crmState.colF[page];}
-function crmSetColF(page,col,v){const f=crmColF(page);if(v==='')delete f[col];else f[col]=v;crmRender();}
+function crmColFArr(page,col){const v=crmColF(page)[col];return Array.isArray(v)?v:[];}
 function crmClearColF(page){if(crmState.colF)crmState.colF[page]={};crmRender();}
-function crmHasColF(page){return Object.keys(crmColF(page)).length>0;}
-function crmApplyColF(page,rows,cols){const f=crmColF(page);const active=cols.filter(c=>c&&c.key&&f[c.key]!=null);if(!active.length)return rows;return rows.filter(r=>active.every(c=>String(c.acc(r)==null?'':c.acc(r))===String(f[c.key])));}
-// a <tr> of filter dropdowns aligned to the table columns; cols entries: null (no filter) or {key,acc,label}
+function crmHasColF(page){const f=crmColF(page);return Object.keys(f).some(k=>Array.isArray(f[k])&&f[k].length);}
+function crmApplyColF(page,rows,cols){const f=crmColF(page);const active=cols.filter(c=>c&&c.key&&Array.isArray(f[c.key])&&f[c.key].length);if(!active.length)return rows;return rows.filter(r=>active.every(c=>f[c.key].includes(String(c.acc(r)==null?'':c.acc(r)))));}
+// a <tr> of filter buttons aligned to columns; each opens a multi-select checkbox menu
 function crmColFilterRow(page,cols,baseRows){
-  const f=crmColF(page);
+  _colVals[page]=_colVals[page]||{};
   return '<tr>'+cols.map(c=>{
     if(!c||!c.key||!c.acc)return '<th style="padding:1px 3px;background:var(--g50)"></th>';
     const vals=[...new Set(baseRows.map(r=>String(c.acc(r)==null?'':c.acc(r))).filter(v=>v!==''&&v!=='—'))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
-    const sel=f[c.key]||'';
-    return `<th style="padding:1px 3px;background:var(--g50)"><select onchange="crmSetColF('${page}','${c.key}',this.value)" title="${c.label||''}" style="width:100%;min-width:64px;font-size:10px;padding:2px;border:1px solid ${sel?'var(--primary)':'var(--g200)'};border-radius:4px;background:#fff;font-weight:${sel?'700':'400'}"><option value="">${LX('الكل','All')}</option>${vals.map(v=>`<option value="${esc(v)}" ${sel===v?'selected':''}>${esc(v)}</option>`).join('')}</select></th>`;
+    _colVals[page][c.key]=vals;
+    const sel=crmColFArr(page,c.key);
+    const lbl=sel.length?`${sel.length} ${LX('محدد','sel')}`:LX('الكل','All');
+    return `<th style="padding:1px 3px;background:var(--g50)"><button onclick="crmColMenu('${page}','${c.key}','${esc(String(c.label||'')).replace(/'/g,"\\'")}')" style="width:100%;min-width:66px;font-size:10px;padding:3px;border:1px solid ${sel.length?'var(--primary)':'var(--g200)'};border-radius:4px;background:#fff;cursor:pointer;font-weight:${sel.length?'700':'400'};color:${sel.length?'var(--primary)':'inherit'}">${lbl} ▾</button></th>`;
   }).join('')+'</tr>';
+}
+function crmColMenu(page,col,label){
+  const vals=(_colVals[page]||{})[col]||[];const sel=crmColFArr(page,col);
+  const boxes=vals.map(v=>`<label style="display:flex;align-items:center;gap:6px;padding:5px 4px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--g100)"><input type="checkbox" class="colf-cb" value="${esc(v)}" ${sel.includes(v)?'checked':''} style="width:auto"/> ${esc(v)}</label>`).join('')||`<div class="crm-empty">—</div>`;
+  openModal(`<h3>🔽 ${LX('فلتر','Filter')}: ${esc(label||'')}</h3>
+    <div style="font-size:11px;color:var(--g400);margin-bottom:6px">${LX('اختر قيمة أو أكثر','Pick one or more values')}</div>
+    <input id="colf-search" placeholder="🔍 ${LX('بحث...','Search...')}" oninput="document.querySelectorAll('#colf-list label').forEach(l=>{l.style.display=l.textContent.toLowerCase().includes(this.value.toLowerCase())?'':'none';})" style="margin-bottom:6px"/>
+    <div style="display:flex;gap:6px;margin-bottom:6px"><button class="btn" style="font-size:11px;flex:1" onclick="document.querySelectorAll('.colf-cb').forEach(c=>{if(c.closest('label').style.display!=='none')c.checked=true})">✅ ${LX('تحديد الكل','All')}</button><button class="btn" style="font-size:11px;flex:1" onclick="document.querySelectorAll('.colf-cb').forEach(c=>c.checked=false)">❌ ${LX('مسح','None')}</button></div>
+    <div id="colf-list" style="max-height:44vh;overflow:auto;border:1px solid var(--g200);border-radius:6px;padding:4px 8px">${boxes}</div>
+    <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-primary" style="flex:1" onclick="crmColMenuApply('${page}','${col}')">💾 ${LX('تطبيق','Apply')}</button><button class="btn" style="flex:1" onclick="closeModal()">${LX('إلغاء','Cancel')}</button></div>`);
+}
+function crmColMenuApply(page,col){
+  const sel=[...document.querySelectorAll('.colf-cb:checked')].map(c=>c.value);
+  const f=crmColF(page);if(sel.length)f[col]=sel;else delete f[col];
+  closeModal();crmRender();
 }
 function crmClearColFBtn(page){return crmHasColF(page)?`<button class="btn" style="font-size:10px;padding:3px 9px" onclick="crmClearColF('${page}')">✕ ${LX('مسح فلاتر الأعمدة','Clear column filters')}</button>`:'';}
 function crmSalesList(type){
@@ -4543,14 +4561,22 @@ function crmFollowup(){
   let html=`<div class="metric-grid">${M(LX('ينتهي هذا الشهر','Expiring this month'),expM)}${M(LX('منهم جدّدوا','Renewed'),renewedM,'#16A34A')}${M(LX('مفروض يجددون','Should renew'),shouldRenew,'#DC2626')}${M(LX('فري سشن للمتابعة','Free sessions to follow'),pending.length,'#D97706')}</div>
   <div class="crm-card"><h3>🔔 ${LX('اشتراكات تقترب من الانتهاء — تابِع التجديد','Subscriptions expiring soon — follow renewal')}</h3>
     <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:10px">${EF.map(b=>`<button class="crm-subbtn ${crmState.expF===b[0]?'on':''}" onclick="crmSetExpF('${b[0]}')">${b[1]}</button>`).join('')}<input type="date" value="${esc(crmState.expDate)}" onchange="crmSetExpDate(this.value)" style="width:auto;font-size:11px;padding:3px 6px"></div>`;
-  html+=exp.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('الاشتراك','Subscription')}</th><th>${LX('ينتهي','Expires')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('سبب عدم التجديد','No-renew reason')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr></thead><tbody>${exp.map(e=>{const log=e.t.renewLog||[];const last=log[log.length-1];return `<tr><td>${esc(e.c.name)}</td><td dir=ltr>${esc(e.c.phone)}</td><td>${esc(e.t.cat||e.t.item)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(e.t))}</td><td>${esc(e.t.trainer||'—')}${can('edit_customers')?` <button class="btn" style="font-size:9px;padding:0 5px;vertical-align:middle" onclick="crmEditProvider('${esc(e.c.phone)}','${esc(e.t.inv)}')" title="${LX('تعديل مقدم الخدمة','Edit provider')}">✏️</button>`:''}</td><td>${esc(e.t.renewReason||'—')}</td><td style="font-size:11px">${last?`${esc(last.note||'')}<br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}</span>`:'—'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmRenewFollowForm('${esc(e.c.phone)}','${esc(e.t.inv)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد ضمن هذا الفلتر','None in this filter')}</div>`;
+  const expPage='followup-exp';
+  const expFCOLS=[null,null,{key:'sub',acc:e=>e.t.cat||e.t.item||'',label:LX('الاشتراك','Subscription')},null,{key:'prov',acc:e=>e.t.trainer||'',label:LX('مقدم الخدمة','Provider')},{key:'reason',acc:e=>e.t.renewReason||'',label:LX('سبب عدم التجديد','No-renew reason')},null,null];
+  const expF=crmApplyColF(expPage,exp,expFCOLS);
+  if(crmHasColF(expPage))html+=`<div style="margin-bottom:6px">${crmClearColFBtn(expPage)}</div>`;
+  html+=exp.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('الاشتراك','Subscription')}</th><th>${LX('ينتهي','Expires')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('سبب عدم التجديد','No-renew reason')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr>${crmColFilterRow(expPage,expFCOLS,exp)}</thead><tbody>${expF.map(e=>{const log=e.t.renewLog||[];const last=log[log.length-1];return `<tr><td>${esc(e.c.name)}</td><td dir=ltr>${esc(e.c.phone)}</td><td>${esc(e.t.cat||e.t.item)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(e.t))}</td><td>${esc(e.t.trainer||'—')}${can('edit_customers')?` <button class="btn" style="font-size:9px;padding:0 5px;vertical-align:middle" onclick="crmEditProvider('${esc(e.c.phone)}','${esc(e.t.inv)}')" title="${LX('تعديل مقدم الخدمة','Edit provider')}">✏️</button>`:''}</td><td>${esc(e.t.renewReason||'—')}</td><td style="font-size:11px">${last?`${esc(last.note||'')}<br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}</span>`:'—'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmRenewFollowForm('${esc(e.c.phone)}','${esc(e.t.inv)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد ضمن هذا الفلتر','None in this filter')}</div>`;
   const dueToday=pending.filter(crmFollowDue).length;
   html+=`</div><div class="crm-card"><h3>👀 ${LX('جرّبوا حصة مجانية ولم يشتركوا (للمتابعة)','Took a free session but didn’t subscribe')}${dueToday?` <span class="crm-pill pill-red">${dueToday} ${LX('يحتاج متابعة اليوم','due today')}</span>`:''}</h3>`;
   const FFF=[['',LX('الكل','All')],['today',LX('اليوم','Today')],['4d',LX('قبل ٤ أيام','Last 4 days')],['week',LX('قبل أسبوع','Last week')],['month',LX('من بداية الشهر','Since month start')],['date',LX('تاريخ محدد','Custom date')]];
   html+=`<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:10px">${FFF.map(b=>`<button class="crm-subbtn ${(crmState.followFreeF||'')===b[0]?'on':''}" onclick="crmSetFollowFreeF('${b[0]}')">${b[1]}</button>`).join('')}<input type="date" value="${esc(crmState.followFreeDate||'')}" onchange="crmSetFollowFreeDate(this.value)" style="width:auto;font-size:11px;padding:3px 6px"></div>`;
   const pf=pending.filter(crmFreeFollowDateMatch);
-  const psort=pf.slice().sort((a,b)=>(crmFollowDue(b)?1:0)-(crmFollowDue(a)?1:0));
-  html+=pf.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الحصة','Session')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('متابعة بتاريخ','Follow on')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr></thead><tbody>${psort.map(f=>{const due=crmFollowDue(f);const log=f.followLog||[];const last=log[log.length-1];return `<tr style="${due?'background:#FEF2F2':''}"><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}</td><td>${cityLabel(f.city)}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').slice(0,10))}</td><td>${esc(f.trainer||'—')}</td><td style="white-space:nowrap">${f.followDate?`${esc(String(f.followDate).slice(0,10))} ${due?'<span class="crm-pill pill-red">'+LX('اليوم','today')+'</span>':''}`:'—'}</td><td style="max-width:220px">${last?`<span style="font-size:11px">${esc(last.note||last.reason||'')}</span><br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}${log.length>1?` · (${log.length} ${LX('متابعات','follow-ups')})`:''}</span>`:'<span style="color:var(--g400)">'+LX('لم تتم متابعة بعد','No follow-up yet')+'</span>'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد فري سشن معلّق — ارفع الحصص من «خدمة العملاء»','No pending free sessions — upload from “Customer Service”')}</div>`;
+  const ffPage='followup-free';
+  const ffFCOLS=[null,null,{key:'city',acc:f=>cityLabel(f.city),label:LX('المدينة','City')},null,{key:'prov',acc:f=>f.trainer||'',label:LX('مقدم الخدمة','Provider')},null,null,null];
+  const pff=crmApplyColF(ffPage,pf,ffFCOLS);
+  const psort=pff.slice().sort((a,b)=>(crmFollowDue(b)?1:0)-(crmFollowDue(a)?1:0));
+  if(crmHasColF(ffPage))html+=`<div style="margin-bottom:6px">${crmClearColFBtn(ffPage)}</div>`;
+  html+=pf.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('المدينة','City')}</th><th>${LX('الحصة','Session')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('متابعة بتاريخ','Follow on')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr>${crmColFilterRow(ffPage,ffFCOLS,pf)}</thead><tbody>${psort.map(f=>{const due=crmFollowDue(f);const log=f.followLog||[];const last=log[log.length-1];return `<tr style="${due?'background:#FEF2F2':''}"><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}</td><td>${cityLabel(f.city)}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').slice(0,10))}</td><td>${esc(f.trainer||'—')}</td><td style="white-space:nowrap">${f.followDate?`${esc(String(f.followDate).slice(0,10))} ${due?'<span class="crm-pill pill-red">'+LX('اليوم','today')+'</span>':''}`:'—'}</td><td style="max-width:220px">${last?`<span style="font-size:11px">${esc(last.note||last.reason||'')}</span><br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}${log.length>1?` · (${log.length} ${LX('متابعات','follow-ups')})`:''}</span>`:'<span style="color:var(--g400)">'+LX('لم تتم متابعة بعد','No follow-up yet')+'</span>'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmFreeFollowForm('${esc(f.sessionId)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد فري سشن معلّق — ارفع الحصص من «خدمة العملاء»','No pending free sessions — upload from “Customer Service”')}</div>`;
   html+=`</div>`;
   return html;
 }
