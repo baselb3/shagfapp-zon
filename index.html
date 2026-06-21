@@ -4242,7 +4242,8 @@ function crmDashboard(){
   // expiry buckets (forward-looking, not period)
   let expToday=0,exp7=0,expMonth=0,activeTotal=0;
   const now=new Date(),mEnd=new Date(now.getFullYear(),now.getMonth()+1,0);
-  CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t)return;const dl=crmDaysLeft(crmEnd(t));if(dl===null||dl<0)return;activeTotal++;if(dl===0)expToday++;if(dl>=0&&dl<=7)exp7++;const ed=new Date(String(crmEnd(t)).slice(0,10));if(!isNaN(ed)&&ed<=mEnd)expMonth++;});
+  const mEndStr=crmYMD(mEnd);
+  CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t)return;const dl=crmDaysLeft(crmEnd(t));if(dl===null||dl<0)return;activeTotal++;if(dl===0)expToday++;if(dl>=0&&dl<=7)exp7++;if(String(crmEnd(t)).slice(0,10)<=mEndStr)expMonth++;});
   const openC=(CRM_SVC.complaints||[]).filter(x=>x.status!=='resolved').length;
   const freeConfNoSub=FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)).length;
   const followToday=FREE_SESSIONS.filter(f=>f.status!=='cancelled'&&!crmIsConverted(f)&&crmFollowDue(f)).length;
@@ -4322,7 +4323,8 @@ function crmDrillBody(k){
   if(k==='provider'){const prov={};ptx.forEach(t=>{if(t.trainer){if(!prov[t.trainer])prov[t.trainer]={n:0,sum:0};prov[t.trainer].n++;prov[t.trainer].sum+=(t.paid||0);}});return tbl([H.prov,H.ops,H.rev],Object.entries(prov).sort((a,b)=>b[1].sum-a[1].sum).map(([p,v])=>`<tr><td>${esc(p)}</td><td>${v.n}</td><td>${crmMoney(v.sum)}</td></tr>`));}
   if(k==='active'||k==='exp7'||k==='expToday'||k==='expMonth'){
     const rows=[];const now=new Date(),mEnd=new Date(now.getFullYear(),now.getMonth()+1,0);
-    CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t)return;const dl=crmDaysLeft(crmEnd(t));if(dl===null||dl<0)return;let ok=k==='active';if(k==='exp7')ok=dl>=0&&dl<=7;if(k==='expToday')ok=dl===0;if(k==='expMonth'){const ed=new Date(String(crmEnd(t)).slice(0,10));ok=!isNaN(ed)&&ed<=mEnd&&dl>=0;}if(ok)rows.push(`<tr><td>${esc(c.name)}</td><td dir=ltr>${esc(c.phone)}</td><td>${esc(t.cat||t.item)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td><td>${esc(t.trainer||'—')}</td></tr>`);});
+    const mEndStr2=crmYMD(mEnd);
+    CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t)return;const dl=crmDaysLeft(crmEnd(t));if(dl===null||dl<0)return;let ok=k==='active';if(k==='exp7')ok=dl>=0&&dl<=7;if(k==='expToday')ok=dl===0;if(k==='expMonth')ok=String(crmEnd(t)).slice(0,10)<=mEndStr2;if(ok)rows.push(`<tr><td>${esc(c.name)}</td><td dir=ltr>${esc(c.phone)}</td><td>${esc(t.cat||t.item)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td><td>${esc(t.trainer||'—')}</td></tr>`);});
     return tbl([H.cust,H.mob,H.sub,H.exp,H.prov],rows);
   }
   if(k==='complaints')return tbl([H.cust,H.comp,H.prio,H.link],(CRM_SVC.complaints||[]).filter(x=>!crmIsResolved(x)).map(x=>`<tr><td>${esc(x.customer)}</td><td>${esc(x.subject)}</td><td>${crmPrioPill(x.priority)}</td><td>${x.link?`<a href="${esc(x.link)}" target="_blank">🔗</a>`:'—'}</td></tr>`));
@@ -4634,7 +4636,7 @@ function crmExpMatch(t){
   if(f==='today')return dl===0;
   if(f==='3d')return dl<=3;
   if(f==='week')return dl<=7;
-  if(f==='month'){const ed=new Date(String(crmEnd(t)).slice(0,10));const now=new Date();const mEnd=new Date(now.getFullYear(),now.getMonth()+1,0);return !isNaN(ed)&&ed<=mEnd;}
+  if(f==='month'){const now=new Date();return String(crmEnd(t)).slice(0,10)<=crmYMD(new Date(now.getFullYear(),now.getMonth()+1,0));}
   if(f==='date')return crmState.expDate?String(crmEnd(t)).slice(0,10)<=crmState.expDate:dl<=14;
   return dl<=14;
 }
@@ -4671,8 +4673,8 @@ function crmFollowup(){
   exp.sort((a,b)=>a.dl-b.dl);
   const pending=FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)&&crmProvAllowed(f.trainer));
   const now=new Date(),mEnd=new Date(now.getFullYear(),now.getMonth()+1,0);
-  let expM=0,expiredC=0;
-  CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t||!crmProvAllowed(t.trainer))return;const ed=new Date(String(crmEnd(t)).slice(0,10));const dl=crmDaysLeft(crmEnd(t));if(isNaN(ed))return;if(dl>=0&&ed<=mEnd)expM++;else if(dl<0)expiredC++;});
+  let expM=0,expiredC=0;const mEndStr=crmYMD(mEnd);
+  CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t||!crmProvAllowed(t.trainer))return;const dl=crmDaysLeft(crmEnd(t));if(dl===null)return;if(dl>=0&&String(crmEnd(t)).slice(0,10)<=mEndStr)expM++;else if(dl<0)expiredC++;});
   const M=(l,v,col)=>`<div class="metric"><div class="ml">${l}</div><div class="mv"${col?` style="color:${col}"`:''}>${v}</div></div>`;
   const EF=[['today',LX('تنتهي اليوم','Today')],['3d',LX('بعد ٣ أيام','In 3 days')],['week',LX('بعد أسبوع','In a week')],['month',LX('نهاية الشهر','End of month')],['date',LX('تاريخ محدد','Custom date')]];
   let html=`<div class="metric-grid">${M(LX('تنتهي هذا الشهر (يجددون)','Expiring this month'),expM,'#DC2626')}${M(LX('منتهية فعلاً (بدون تجديد)','Already expired'),expiredC,'#991B1B')}${M(LX('فري سشن للمتابعة','Free sessions to follow'),pending.length,'#D97706')}</div>
