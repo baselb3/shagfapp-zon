@@ -3643,7 +3643,7 @@ let CRM_CFG={
   leadStatuses:['لا رد','تم الحجز','سيتم الحجز قريباً','الوقت غير مناسب','خارج مناطق التغطية','السعر مرتفع','غير مهتم'],
   addonPackages:['Minute Nutrition'] // باقات تُعطى مع الاشتراك ولا تُحتسب اشتراكاً/جديد/تجديد
 };
-let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'week',expDate:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:'',myDashPeriod:'month',myDashDrill:'',myDashDate:'',mdRef:'today',mdDate:'',todoView:'mine',todoPerson:'',ndPeriod:'month',ndFrom:'',ndTo:''};
+let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'all',expDate:'',followSearch:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:'',myDashPeriod:'month',myDashDrill:'',myDashDate:'',mdRef:'today',mdDate:'',todoView:'mine',todoPerson:'',ndPeriod:'month',ndFrom:'',ndTo:''};
 let _todoDrag=null;
 let crmHidden={};      // per-metric privacy hide state
 let crmPrivacyAll=false;
@@ -4630,18 +4630,23 @@ function crmDeskDelete(id){
 }
 
 // ---------- المتابعة (تحت المبيعات): انتهاء قريب + فري سشن لم يشترك ----------
+// who's in the renewal follow-up: expired-and-not-renewed + expiring within the chosen window.
 function crmExpMatch(t){
-  const dl=crmDaysLeft(crmEnd(t));if(dl===null||dl<0)return false;
-  const f=crmState.expF;
+  const dl=crmDaysLeft(crmEnd(t));if(dl===null)return false;
+  const day=String(crmEnd(t)).slice(0,10);
+  const now=new Date();const mEndStr=crmYMD(new Date(now.getFullYear(),now.getMonth()+1,0));
+  const f=crmState.expF||'all';
+  if(f==='expired')return dl<0;                       // منتهية فعلاً
   if(f==='today')return dl===0;
-  if(f==='3d')return dl<=3;
-  if(f==='week')return dl<=7;
-  if(f==='month'){const now=new Date();return String(crmEnd(t)).slice(0,10)<=crmYMD(new Date(now.getFullYear(),now.getMonth()+1,0));}
-  if(f==='date')return crmState.expDate?String(crmEnd(t)).slice(0,10)<=crmState.expDate:dl<=14;
-  return dl<=14;
+  if(f==='3d')return dl>=0&&dl<=3;
+  if(f==='week')return dl>=0&&dl<=7;
+  if(f==='month')return dl>=0&&day<=mEndStr;          // تنتهي هذا الشهر (لم تنتهِ بعد)
+  if(f==='date')return crmState.expDate?day===crmState.expDate:true; // يوم محدد بالضبط
+  return dl<0||day<=mEndStr;                          // الكل = منتهية + تنتهي هذا الشهر (تحتاج تجديد)
 }
 function crmSetExpF(f){crmState.expF=f;crmRender();}
 function crmSetExpDate(d){crmState.expDate=d;crmState.expF='date';crmRender();}
+function crmSetFollowSearch(v){crmState.followSearch=v;crmRender();var el=document.getElementById('followSearch');if(el){el.focus();try{el.setSelectionRange(el.value.length,el.value.length);}catch(e){}}}
 function crmSetSalesSort(s){crmState.salesSort=s;crmRender();}
 function crmSetSalesPeriod(p){crmState.salesPeriod=p;crmRender();}
 function crmSetSalesSearch(v){crmState.salesSearch=v;crmRender();var el=document.getElementById('salesSearch');if(el){el.focus();try{el.setSelectionRange(el.value.length,el.value.length);}catch(e){}}}
@@ -4676,15 +4681,18 @@ function crmFollowup(){
   let expM=0,expiredC=0;const mEndStr=crmYMD(mEnd);
   CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t||!crmProvAllowed(t.trainer))return;const dl=crmDaysLeft(crmEnd(t));if(dl===null)return;if(dl>=0&&String(crmEnd(t)).slice(0,10)<=mEndStr)expM++;else if(dl<0)expiredC++;});
   const M=(l,v,col)=>`<div class="metric"><div class="ml">${l}</div><div class="mv"${col?` style="color:${col}"`:''}>${v}</div></div>`;
-  const EF=[['today',LX('تنتهي اليوم','Today')],['3d',LX('بعد ٣ أيام','In 3 days')],['week',LX('بعد أسبوع','In a week')],['month',LX('نهاية الشهر','End of month')],['date',LX('تاريخ محدد','Custom date')]];
+  const EF=[['all',LX('الكل (تحتاج تجديد)','All (need renewal)')],['expired',LX('منتهية فعلاً','Already expired')],['today',LX('تنتهي اليوم','Today')],['3d',LX('بعد ٣ أيام','In 3 days')],['week',LX('بعد أسبوع','In a week')],['month',LX('تنتهي هذا الشهر','This month')],['date',LX('يوم محدد','Specific day')]];
   let html=`<div class="metric-grid">${M(LX('تنتهي هذا الشهر (يجددون)','Expiring this month'),expM,'#DC2626')}${M(LX('منتهية فعلاً (بدون تجديد)','Already expired'),expiredC,'#991B1B')}${M(LX('فري سشن للمتابعة','Free sessions to follow'),pending.length,'#D97706')}</div>
-  <div class="crm-card"><h3>🔔 ${LX('اشتراكات تقترب من الانتهاء — تابِع التجديد','Subscriptions expiring soon — follow renewal')}</h3>
-    <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:10px">${EF.map(b=>`<button class="crm-subbtn ${crmState.expF===b[0]?'on':''}" onclick="crmSetExpF('${b[0]}')">${b[1]}</button>`).join('')}<input type="date" value="${esc(crmState.expDate)}" onchange="crmSetExpDate(this.value)" style="width:auto;font-size:11px;padding:3px 6px"></div>`;
+  <div class="crm-card"><h3>🔔 ${LX('اشتراكات منتهية / تقترب — تابِع التجديد','Expired / expiring subscriptions — follow renewal')}</h3>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:8px">${EF.map(b=>`<button class="crm-subbtn ${(crmState.expF||'all')===b[0]?'on':''}" onclick="crmSetExpF('${b[0]}')">${b[1]}</button>`).join('')}<input type="date" value="${esc(crmState.expDate)}" onchange="crmSetExpDate(this.value)" style="width:auto;font-size:11px;padding:3px 6px"></div>
+    <div style="margin-bottom:8px"><input type="text" id="followSearch" placeholder="🔍 ${LX('بحث بالاسم أو رقم الجوال...','Search name/mobile...')}" value="${esc(crmState.followSearch||'')}" oninput="crmSetFollowSearch(this.value)" style="width:100%;max-width:340px"></div>`;
   const expPage='followup-exp';
+  const fq=String(crmState.followSearch||'').trim();
+  const expRows=fq?exp.filter(e=>String(e.c.name||'').indexOf(fq)>=0||String(e.c.phone||'').indexOf(fq)>=0):exp;
   const expFCOLS=[null,null,{key:'sub',acc:e=>e.t.cat||e.t.item||'',label:LX('الاشتراك','Subscription')},null,{key:'prov',acc:e=>e.t.trainer||'',label:LX('مقدم الخدمة','Provider')},{key:'reason',acc:e=>e.t.renewReason||'',label:LX('سبب عدم التجديد','No-renew reason')},null,null];
-  const expF=crmApplyColF(expPage,exp,expFCOLS);
+  const expF=crmApplyColF(expPage,expRows,expFCOLS);
   if(crmHasColF(expPage))html+=`<div style="margin-bottom:6px">${crmClearColFBtn(expPage)}</div>`;
-  html+=exp.length?`<table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('الاشتراك','Subscription')}</th><th>${LX('ينتهي','Expires')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('سبب عدم التجديد','No-renew reason')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr>${crmColFilterRow(expPage,expFCOLS,exp)}</thead><tbody>${expF.map(e=>{const log=e.t.renewLog||[];const last=log[log.length-1];return `<tr><td>${esc(e.c.name)}</td><td dir=ltr>${esc(e.c.phone)}</td><td>${esc(e.t.cat||e.t.item)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(e.t))}</td><td>${esc(e.t.trainer||'—')}${can('edit_customers')?` <button class="btn" style="font-size:9px;padding:0 5px;vertical-align:middle" onclick="crmEditProvider('${esc(e.c.phone)}','${esc(e.t.inv)}')" title="${LX('تعديل مقدم الخدمة','Edit provider')}">✏️</button>`:''}</td><td>${esc(e.t.renewReason||'—')}</td><td style="font-size:11px">${last?`${esc(last.note||'')}<br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}</span>`:'—'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmRenewFollowForm('${esc(e.c.phone)}','${esc(e.t.inv)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="crm-empty">${LX('لا يوجد ضمن هذا الفلتر','None in this filter')}</div>`;
+  html+=exp.length?`<div style="font-size:11px;color:var(--g400);margin-bottom:4px">${expF.length} ${LX('عميل','customer(s)')}</div><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('الاشتراك','Subscription')}</th><th>${LX('ينتهي','Expires')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('سبب عدم التجديد','No-renew reason')}</th><th>${LX('آخر متابعة','Last follow-up')}</th><th></th></tr>${crmColFilterRow(expPage,expFCOLS,expRows)}</thead><tbody>${expF.slice(0,400).map(e=>{const log=e.t.renewLog||[];const last=log[log.length-1];return `<tr><td>${esc(e.c.name)}</td><td dir=ltr>${esc(e.c.phone)}</td><td>${esc(e.t.cat||e.t.item)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(e.t))}</td><td>${esc(e.t.trainer||'—')}${can('edit_customers')?` <button class="btn" style="font-size:9px;padding:0 5px;vertical-align:middle" onclick="crmEditProvider('${esc(e.c.phone)}','${esc(e.t.inv)}')" title="${LX('تعديل مقدم الخدمة','Edit provider')}">✏️</button>`:''}</td><td>${esc(e.t.renewReason||'—')}</td><td style="font-size:11px">${last?`${esc(last.note||'')}<br><span style="font-size:10px;color:var(--g400)">${esc(last.by||'')} · ${esc(last.at||'')}</span>`:'—'}</td><td><button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmRenewFollowForm('${esc(e.c.phone)}','${esc(e.t.inv)}')">➕ ${LX('متابعة','Follow')}</button></td></tr>`;}).join('')}</tbody></table>${expF.length>400?`<div class="crm-empty">${LX('عرض ٤٠٠ من','Showing 400 of')} ${expF.length} — ${LX('استخدم البحث/الفلتر','use search/filter')}</div>`:''}`:`<div class="crm-empty">${LX('لا يوجد ضمن هذا الفلتر','None in this filter')}</div>`;
   const dueToday=pending.filter(crmFollowDue).length;
   html+=`</div><div class="crm-card"><h3>👀 ${LX('جرّبوا حصة مجانية ولم يشتركوا (للمتابعة)','Took a free session but didn’t subscribe')}${dueToday?` <span class="crm-pill pill-red">${dueToday} ${LX('يحتاج متابعة اليوم','due today')}</span>`:''}</h3>`;
   const FFF=[['',LX('الكل','All')],['today',LX('اليوم','Today')],['4d',LX('قبل ٤ أيام','Last 4 days')],['week',LX('قبل أسبوع','Last week')],['month',LX('من بداية الشهر','Since month start')],['date',LX('تاريخ محدد','Custom date')]];
