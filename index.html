@@ -3687,7 +3687,17 @@ function crmHasReal(c){return crmRealTxns(c).length>0;}
 // history (earliest = new), NOT from the file's Subscription Type column.
 // New vs Renewal: trust the file's "Subscription Type" column (the source system knows the
 // customer's FULL history); fall back to earliest-txn derivation only when the column is missing.
-function crmTxnType(t,i){const ft=String(t.type||'').trim();if(/renew/i.test(ft))return 'Renewal';if(/new/i.test(ft))return 'New';return i===0?'New':'Renewal';}
+// Renewal = the customer had a PREVIOUS real subscription when they paid (per the source system's
+// "Previous Subscription Type"). NA / empty / "Free trial (one session)" = first paid sub = New.
+// Falls back to the Subscription Type column, then earliest-txn derivation, when prev is absent.
+function crmTxnType(t,i){
+  const prev=String(t.prev||'').trim();
+  if(prev){return (/^na$/i.test(prev)||/free\s*trial|تجربة/i.test(prev))?'New':'Renewal';}
+  const ft=String(t.type||'').trim();
+  if(/renew/i.test(ft))return 'Renewal';
+  if(/new/i.test(ft))return 'New';
+  return i===0?'New':'Renewal';
+}
 function crmTxnsWithType(){
   const out=[];
   CUSTOMERS.forEach(c=>{
