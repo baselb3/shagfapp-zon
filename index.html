@@ -449,6 +449,7 @@ input:focus,select:focus{outline:none;border-color:var(--primary);background:#ff
   <div class="crm-sub" id="crmSub"></div>
   <div class="crm-body" id="crmBody"></div>
   <input type="file" id="salesFile" accept=".xlsx,.xls,.csv" onchange="importFile('sales',this)" style="position:absolute;opacity:0;width:0;height:0"/>
+  <input type="file" id="updateFile" accept=".xlsx,.xls,.csv" onchange="importFile('update',this)" style="position:absolute;opacity:0;width:0;height:0"/>
   <input type="file" id="freeFile" accept=".xlsx,.xls,.csv" onchange="importFile('freesessions',this)" style="position:absolute;opacity:0;width:0;height:0"/>
   <input type="file" id="leadsFile" accept=".xlsx,.xls,.csv" onchange="importFile('leads',this)" style="position:absolute;opacity:0;width:0;height:0"/>
 </div>
@@ -740,6 +741,7 @@ const ALL_PERMISSIONS = [
   {key:'export_data',    ar:'تصدير/تحميل Excel',           en:'Export / Download Excel'},
   {key:'view_customer_lists',ar:'عرض قوائم العملاء التفصيلية',en:'View Detailed Customer Lists'},
   {key:'view_new_dashboard',ar:'داش بورد «جديد» (تحويل التجارب)',en:'New (Conversion) Dashboard'},
+  {key:'view_excluded',  ar:'عرض الباقات المستبعدة (تغذية…)',en:'View Excluded Packages'},
   {key:'view_todo',      ar:'المهام (To-Do) — مهامي',      en:'Tasks (To-Do) — my tasks'},
   {key:'manage_all_todos',ar:'إشراف على كل المهام (قراءة)',  en:'Oversee all tasks (read-only)'},
 ];
@@ -2037,6 +2039,7 @@ function importFile(type,input){
         rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
       }
       if(type==='sales'){importSales(rows);input.value='';return;}
+      if(type==='update'){importUpdate(rows);input.value='';return;}
       if(type==='freesessions'){importFreeSessions(rows);input.value='';return;}
       if(type==='leads'){importLeads(rows);input.value='';return;}
       const dataRows=rows.filter((r,i)=>i>0&&r[0]!==undefined&&r[0]!==''&&!String(r[0]).startsWith('//'));
@@ -3269,7 +3272,7 @@ function renderUsers(){
 // Permissions grouped by area so granting an employee is organized (Sales / CS / ...)
 const PERM_GROUPS=[
   {ar:'🗺 الزون والخريطة والمدربات',en:'Zones, Map & Coaches',keys:['view_map','view_coaches','edit_coaches','delete_coaches','view_zones','edit_zones','delete_zones','view_stats','view_emojis','edit_emojis','view_prices','edit_prices','view_cities','edit_cities','import_export','view_history','clear_history','manage_teams']},
-  {ar:'🛒 المبيعات',en:'Sales',keys:['view_crm','view_dashboard','view_new_dashboard','edit_customers','delete_customers','view_customer_lists','export_data']},
+  {ar:'🛒 المبيعات',en:'Sales',keys:['view_crm','view_dashboard','view_new_dashboard','view_excluded','edit_customers','delete_customers','view_customer_lists','export_data']},
   {ar:'🎧 خدمة العملاء',en:'Customer Service',keys:['manage_complaints','manage_followups','manage_leads','upload_data','edit_lead_zone']},
   {ar:'📋 المهام (To-Do)',en:'Tasks',keys:['view_todo','manage_all_todos']},
   {ar:'📊 لوحتي',en:'My Dashboard',keys:['view_my_dashboard']},
@@ -3869,6 +3872,51 @@ function importSales(rows){
     crmRender();
   }).catch(e=>{console.error('importSales',e);toast(LX('❌ فشل الحفظ: ','❌ Save failed: ')+e.message);});
 }
+// «تحديث البيانات» — يحدّث الزون + تاريخ النهاية + الحصص للفواتير الموجودة (بمطابقة رقم الفاتورة)، ويضيف الجديدة فقط. لا يحذف شيء.
+function importUpdate(rows){
+  if(!can('upload_data')){toast(LX('ليس لديك صلاحية رفع الملفات','No permission to upload files'));return;}
+  if(!rows||!rows.length){toast(LX('❌ ملف فارغ','❌ Empty file'));return;}
+  const H=rows[0].map(h=>String(h).trim());const I=n=>H.indexOf(n);
+  const F={inv:I('Invoice No'),name:I('Customer Name'),mob:I('Customer Mobile'),email:I('Customer Email'),addr:I('Address'),item:I('Item Bought'),cat:I('Category'),exp:I('Expiry Date'),trainer:I('Trainer Name'),pdate:I('Purchase Date'),paid:I('Paid Amount'),disc:I('Discount Amount'),coup:I('Coupon Code'),st:I('Subscription Status'),type:I('Subscription Type'),prev:I('Previous Subscription Type'),sess:I('Sessions'),used:I('Used Sessions'),rem:I('Remaining Sessions')};
+  if(F.mob<0||F.inv<0){toast(LX('❌ الملف لا يطابق تنسيق المبيعات (تأكد من الأعمدة)','❌ File does not match sales format'));return;}
+  const data=rows.slice(1).filter(r=>r[F.mob]&&String(r[F.mob]).trim()&&r[F.inv]&&String(r[F.inv]).trim());
+  if(!data.length){toast(LX('❌ لا توجد صفوف بيانات','❌ No data rows'));return;}
+  const batchId='b'+Date.now();
+  const parsed={};
+  data.forEach(r=>{
+    const phone=String(r[F.mob]).trim();const g=crmGeocode(r[F.addr]||'');
+    const txn={inv:String(r[F.inv]).trim(),cat:r[F.cat]||'',item:r[F.item]||'',expiry:String(r[F.exp]||'').slice(0,10),pdate:r[F.pdate]||'',trainer:r[F.trainer]||'',paid:parseFloat(r[F.paid])||0,disc:parseFloat(r[F.disc])||0,coupon:r[F.coup]||'',status:r[F.st]||'',type:r[F.type]||'',prev:r[F.prev]||'',sessions:parseInt(r[F.sess])||0,used:parseInt(r[F.used])||0,remaining:parseInt(r[F.rem])||0,address:r[F.addr]||'',city:g.city||null,cityName:g.cityName||'',zoneId:(g.zoneId==null?null:g.zoneId),geoSrc:g.src,_batch:batchId};
+    if(!parsed[phone])parsed[phone]={phone,name:r[F.name]||'',email:r[F.email]||'',txns:[]};
+    parsed[phone].txns.push(txn);
+  });
+  let updated=0,added=0;
+  mutateListDoc('customers',current=>{
+    const map={};current.forEach(c=>map[c.phone]=Object.assign({},c,{txns:(c.txns||[]).slice()}));
+    Object.values(parsed).forEach(p=>{
+      let cu=map[p.phone];
+      if(!cu){cu={phone:p.phone,name:p.name,email:p.email,address:'',notes:'',city:null,cityName:'',zoneId:null,txns:[]};map[p.phone]=cu;}
+      p.txns.forEach(t=>{
+        const idx=cu.txns.findIndex(x=>x.inv===t.inv);
+        if(idx>=0){
+          // UPDATE existing invoice: refresh expiry/zone/sessions/status — keep manual overrides, refund, renewLog, original _batch
+          const o=cu.txns[idx];
+          cu.txns[idx]=Object.assign({},o,{expiry:t.expiry||o.expiry,city:t.city||o.city,cityName:t.cityName||o.cityName,zoneId:(t.zoneId!=null?t.zoneId:o.zoneId),sessions:t.sessions||o.sessions,used:t.used||o.used,remaining:t.remaining||o.remaining,status:t.status||o.status,trainer:t.trainer||o.trainer});
+          updated++;
+        }else{cu.txns.push(t);added++;}
+        if(t.city){cu.city=t.city;cu.cityName=t.cityName;}
+        if(t.zoneId!=null)cu.zoneId=t.zoneId;
+        cu.name=cu.name||p.name;cu.email=cu.email||p.email;
+      });
+    });
+    return Object.values(map);
+  }).then(next=>{
+    CUSTOMERS=next;
+    toast(LX(`✅ تحديث: حُدّثت ${updated} فاتورة · أُضيفت ${added} · العملاء ${next.length}`,`✅ Update: ${updated} updated · ${added} added · customers ${next.length}`));
+    try{logHistory(LX('تحديث بيانات','Data update'),LX(`حُدّثت ${updated}، أُضيفت ${added}`,`${updated} updated, ${added} added`),'import');}catch(e){}
+    crmLogUpload('update',{total:data.length,added,updated,dupe:0,skipped:0,note:LX('تحديث بيانات','data update'),batch:batchId});
+    if(crmState.mode!=='crm')switchMode('crm');crmRender();
+  }).catch(e=>{console.error('importUpdate',e);toast(LX('❌ فشل الحفظ: ','❌ Save failed: ')+e.message);});
+}
 
 // ---------- mode + navigation ----------
 function switchMode(mode){
@@ -3892,6 +3940,7 @@ function crmNavDefs(){
   if(can('view_dashboard'))d.push({key:'dash',label:LX('📊 داش بورد','📊 Dashboard')});
   if(can('view_my_dashboard'))d.push({key:'mydash',label:LX('📊 لوحتي','📊 My Dashboard')});
   if(can('view_new_dashboard'))d.push({key:'newdash',label:LX('🆕 جديد','🆕 New')});
+  if(can('view_excluded'))d.push({key:'excluded',label:LX('🍎 باقات مستبعدة','🍎 Excluded')});
   if(can('view_todo')||can('manage_all_todos'))d.push({key:'todo',label:LX('📋 المهام','📋 Tasks')});
   if(can('view_crm'))d.push({key:'sales',label:LX('🛒 مبيعات','🛒 Sales'),subs:[['new',LX('جديد','New')],['renew',LX('تجديد','Renewal')],['customers',LX('كل العملاء','All Customers')],['followup',LX('المتابعة','Follow-up')]]});
   if(can('manage_complaints')||can('manage_followups')||can('manage_leads')){
@@ -3938,6 +3987,7 @@ function crmRender(){
   if(crmState.sec==='dash')b.innerHTML=can('view_dashboard')?crmDashboard():`<div class="crm-empty">${LX('ليس لديك صلاحية عرض الداش بورد','You don’t have dashboard permission')}</div>`;
   else if(crmState.sec==='mydash')b.innerHTML=can('view_my_dashboard')?crmMyDash():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
   else if(crmState.sec==='newdash')b.innerHTML=can('view_new_dashboard')?crmNewDash():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
+  else if(crmState.sec==='excluded')b.innerHTML=can('view_excluded')?crmExcluded():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
   else if(crmState.sec==='todo')b.innerHTML=(can('view_todo')||can('manage_all_todos'))?crmTodo():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
   else if(crmState.sec==='sales'){
     if(crmState.sub==='customers')b.innerHTML=crmCustomers();
@@ -3997,7 +4047,7 @@ function crmExportCurrent(){
 function crmPrint(){window.print();}
 function crmUploadBar(){
   if(!can('upload_data'))return '';
-  return `<div class="crm-upload"><span style="font-size:12px;color:var(--primary);font-weight:600">📄 ${LX('رفع ملف المبيعات (آخر اليوم) — يحدّد جديد/تجديد تلقائياً ولا يكرّر فاتورة مرفوعة سابقاً','Upload the sales file (end of day) — auto-detects new/renewal and never double-counts an already-uploaded invoice')}</span><button class="btn btn-primary" onclick="document.getElementById('salesFile').click()">📥 ${LX('رفع إكسل / CSV','Upload Excel / CSV')}</button></div>`;
+  return `<div class="crm-upload"><span style="font-size:12px;color:var(--primary);font-weight:600">📄 ${LX('رفع ملف المبيعات (آخر اليوم) — يحدّد جديد/تجديد تلقائياً ولا يكرّر فاتورة مرفوعة سابقاً','Upload the sales file (end of day) — auto-detects new/renewal and never double-counts an already-uploaded invoice')}</span><button class="btn btn-primary" onclick="document.getElementById('salesFile').click()">📥 ${LX('رفع إكسل / CSV','Upload Excel / CSV')}</button> <button class="btn" style="border-color:var(--primary);color:var(--primary)" onclick="document.getElementById('updateFile').click()" title="${LX('يحدّث الزون وتاريخ النهاية للفواتير الموجودة ويضيف الجديدة فقط — لا يحذف','Updates zone + expiry of existing invoices and adds new ones only — no deletes')}">🔄 ${LX('تحديث البيانات','Update data')}</button></div>`;
 }
 function crmFmtExpiry(e){
   const dl=crmDaysLeft(e);if(dl===null)return esc(e||'—');
@@ -4094,17 +4144,19 @@ function crmDashWidgets(){
 function crmMyDashDefault(){const all=crmDashWidgets().filter(crmWidgetAllowed);let s=all.filter(w=>w.group==='mine').slice(0,4).map(w=>w.key);if(!s.length)s=all.slice(0,4).map(w=>w.key);return s;}
 // ---------- shared "work lists" (renewals + free-not-subscribed) used by لوحتي and جديد ----------
 function _lastNote(arr){const x=(arr||[]);const e=x[x.length-1];return e?(e.note||e.reason||''):'';}
-function crmWlState(ctx){if(!crmState.wl)crmState.wl={};if(!crmState.wl[ctx])crmState.wl[ctx]={ref:(ctx==='nd'?'today':'all'),date:''};return crmState.wl[ctx];}
-function crmSetWlRef(ctx,v){const s=crmWlState(ctx);s.ref=v;s.date='';crmRender();}
-function crmSetWlDate(ctx,v){const s=crmWlState(ctx);s.date=v||'';s.ref=v?'date':(ctx==='nd'?'today':'all');crmRender();}
+function crmWlState(ctx){if(!crmState.wl)crmState.wl={};if(!crmState.wl[ctx])crmState.wl[ctx]={ref:(ctx==='nd'?'today':'all'),date:'',from:'',to:''};return crmState.wl[ctx];}
+function crmSetWlRef(ctx,v){const s=crmWlState(ctx);s.ref=v;s.date='';s.from='';s.to='';crmRender();}
+function crmSetWlDate(ctx,v){const s=crmWlState(ctx);s.date=v||'';s.from='';s.to='';s.ref=v?'date':(ctx==='nd'?'today':'all');crmRender();}
+function crmSetWlRange(ctx,f,t){const s=crmWlState(ctx);if(f!==null)s.from=f;if(t!==null)s.to=t;s.ref='all';s.date='';crmRender();}
 function crmWlDay(ctx){const s=crmWlState(ctx);if(s.ref==='all')return null;if(s.ref==='date')return s.date||null;const off=s.ref==='-1'?-1:s.ref==='-3'?-3:0;const n=new Date();return crmYMD(new Date(n.getFullYear(),n.getMonth(),n.getDate()+off));}
-function crmWlMatch(ctx,dateStr){const day=crmWlDay(ctx);if(!day)return true;return String(dateStr||'').slice(0,10)===day;}
+function crmWlMatch(ctx,dateStr){const s=crmWlState(ctx);if(s.from||s.to){const d=String(dateStr||'').slice(0,10);if(!d)return false;if(s.from&&d<s.from)return false;if(s.to&&d>s.to)return false;return true;}const day=crmWlDay(ctx);if(!day)return true;return String(dateStr||'').slice(0,10)===day;}
 function crmWlBar(ctx){
   const RF=[['all',LX('الكل','All')],['today',LX('اليوم','Today')],['-1',LX('أمس','Yesterday')],['-3',LX('قبل ٣ أيام','3 days ago')]];
-  const s=crmWlState(ctx);const isDate=s.ref==='date'&&s.date;
-  const btns=RF.map(b=>`<button class="crm-subbtn ${(!isDate&&s.ref===b[0])?'on':''}" onclick="crmSetWlRef('${ctx}','${b[0]}')">${b[1]}</button>`).join('');
-  const dbox=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">📅 ${LX('تاريخ محدد','Specific date')}:</span><input type="date" value="${esc(s.date||'')}" onchange="crmSetWlDate('${ctx}',this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px${isDate?';outline:2px solid var(--primary)':''}"/>`;
-  return `<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:14px">🗓 ${btns}${dbox}</div>`;
+  const s=crmWlState(ctx);const isDate=s.ref==='date'&&s.date;const hasRange=!!(s.from||s.to);
+  const btns=RF.map(b=>`<button class="crm-subbtn ${(!isDate&&!hasRange&&s.ref===b[0])?'on':''}" onclick="crmSetWlRef('${ctx}','${b[0]}')">${b[1]}</button>`).join('');
+  const dbox=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">📅 ${LX('يوم','Day')}:</span><input type="date" value="${esc(s.date||'')}" onchange="crmSetWlDate('${ctx}',this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px${isDate?';outline:2px solid var(--primary)':''}"/>`;
+  const range=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:8px">${LX('من','From')}</span><input type="date" value="${esc(s.from||'')}" onchange="crmSetWlRange('${ctx}',this.value,null)" style="font-size:11px;padding:3px 6px;border:1px solid ${hasRange?'var(--primary)':'var(--g300)'};border-radius:6px"/><span style="font-size:11px;color:var(--g600)">${LX('إلى','To')}</span><input type="date" value="${esc(s.to||'')}" onchange="crmSetWlRange('${ctx}',null,this.value)" style="font-size:11px;padding:3px 6px;border:1px solid ${hasRange?'var(--primary)':'var(--g300)'};border-radius:6px"/>${hasRange?`<button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmSetWlRange('${ctx}','','')">✕</button>`:''}`;
+  return `<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:14px">🗓 ${btns}${dbox}${range}</div>`;
 }
 function crmRenewBacklog(ctx){
   const out=[];const today=new Date();today.setHours(23,59,59,0);
@@ -4127,10 +4179,22 @@ function crmWorkLists(ctx){
   const noSubCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">🎟 ${LX('أخذوا فري سشن وما اشتركوا','Took a free session, no subscription')} <span class="crm-pill pill-amber">${noSub.length}</span></h3><div style="max-height:540px;overflow:auto">${noSub.length?noSub.slice(0,200).map(crmFreeRow).join(''):`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div></div>`;
   return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px">${renewCard}${noSubCard}</div>`;
 }
+function crmPctBars(title,ic,map,accent){
+  const total=Object.values(map).reduce((s,n)=>s+n,0);
+  const items=Object.entries(map).sort((a,b)=>b[1]-a[1]);
+  const body=total?items.map(([k,n])=>{const pct=Math.round(n/total*100);return `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span>${esc(k)}</span><span style="font-weight:700">${pct}% <span style="color:var(--g400);font-weight:400">(${n})</span></span></div><div style="height:8px;background:var(--g100);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${accent}"></div></div></div>`;}).join(''):`<div class="crm-empty">${LX('لا بيانات بعد — تُجمع من ملاحظات المتابعة','No data yet — collected from follow-up notes')}</div>`;
+  return `<div class="crm-card"><h3 style="margin:0 0 8px">${ic} ${title} ${total?`<span class="crm-pill pill-gray">${total}</span>`:''}</h3>${body}</div>`;
+}
+function crmReasonsRow(){
+  const noSub={};FREE_SESSIONS.forEach(f=>{if(f.status==='cancelled'||crmIsConverted(f)||!crmProvAllowed(f.trainer))return;const r=String(f.notSubReason||'').trim();if(r)noSub[r]=(noSub[r]||0)+1;});
+  const noRenew={};CUSTOMERS.forEach(c=>{if(!crmCustAllowed(c))return;(c.txns||[]).forEach(t=>{const r=String(t.renewReason||'').trim();if(r)noRenew[r]=(noRenew[r]||0)+1;});});
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:14px">${crmPctBars(LX('أسباب عدم الاشتراك','No-subscription reasons'),'🚫',noSub,'#D97706')}${crmPctBars(LX('أسباب عدم التجديد','No-renewal reasons'),'🔄',noRenew,'#DC2626')}</div>`;
+}
 function crmMyDash(){
   const greet=currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'';
   return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px"><h3 style="margin:0;font-size:16px">📋 ${LX('لوحتي','My board')}${greet?` · ${esc(greet)}`:''}</h3></div>
-   <div style="font-size:11px;color:var(--g400);margin-bottom:10px">${LX('اللي يحتاج تجديد واللي أخذ فري سشن وما اشترك — تابِع واكتب النوت من هنا. «الكل» يعرض القائمة كاملة، والأزرار تفلتر بيوم العنصر.','Renewals due and free-session no-subs — follow up and note here. “All” shows the full list; the buttons filter by the item’s day.')}</div>
+   <div style="font-size:11px;color:var(--g400);margin-bottom:10px">${LX('اللي يحتاج تجديد واللي أخذ فري سشن وما اشترك — تابِع واكتب النوت من هنا. «الكل» يعرض القائمة كاملة.','Renewals due and free-session no-subs — follow up and note here. “All” shows the full list.')}</div>
+   ${crmReasonsRow()}
    ${crmWlBar('my')}${crmWorkLists('my')}`;
 }
 
@@ -5200,6 +5264,30 @@ function crmNdExport(){
   given.forEach(f=>rows.push([f.name,f.phone,String(f.scheduledDate||'').slice(0,10),f.trainer||'',crmIsConverted(f)?LX('نعم','Yes'):LX('لا','No')]));
   crmExportXlsx(rows,'new-conversion.xlsx');
 }
+// ===================== EXCLUDED PACKAGES (manager view) =====================
+function crmExcluded(){
+  // all txns whose package is an excluded "add-on" (nutrition, etc.) — not counted in sales/new/renewal
+  const rows=[];
+  CUSTOMERS.forEach(c=>{if(!crmCustAllowed(c))return;(c.txns||[]).forEach(t=>{if(crmIsAddon(t))rows.push(Object.assign({_name:c.name,_phone:c.phone},t));});});
+  const byPkg={};rows.forEach(t=>{const k=t.item||t.cat||'—';byPkg[k]=(byPkg[k]||0)+1;});
+  const uniqCust=new Set(rows.map(t=>t._phone)).size;
+  const cfgList=(CRM_CFG.addonPackages||[]);
+  const stats=`<div class="metric-grid"><div class="metric"><div class="ml">🍎 ${LX('إجمالي الباقات المستبعدة','Total excluded packages')}</div><div class="mv">${rows.length}</div></div><div class="metric"><div class="ml">👤 ${LX('عملاء','Customers')}</div><div class="mv">${uniqCust}</div></div><div class="metric"><div class="ml">🏷 ${LX('أنواع','Types')}</div><div class="mv">${Object.keys(byPkg).length}</div></div></div>`;
+  const summary=`<div class="crm-card"><h3>🏷 ${LX('حسب الباقة','By package')}</h3>${Object.entries(byPkg).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px solid var(--g100)"><span>${esc(k)}</span><span style="font-weight:700">${n}</span></div>`).join('')||`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div>`;
+  const note=`<div style="font-size:11px;color:var(--g400);margin-bottom:10px">${LX('هذه الباقات مستبعدة من حسابات المبيعات/الجديد/التجديد (تُضبط من الإعدادات: ','These packages are excluded from sales/new/renewal counts (set in Settings: ')}<b>${cfgList.map(esc).join('، ')||'—'}</b>). ${LX('هنا تشوف مين أخذها وكم عددها.','Here you see who took them and how many.')}</div>`;
+  const page='excluded';
+  const FCOLS=[null,null,{key:'pkg',acc:t=>t.item||t.cat||'',label:LX('الباقة','Package')},{key:'prov',acc:t=>t.trainer||'',label:LX('مقدم الخدمة','Provider')},null];
+  const data=crmApplyColF(page,rows,FCOLS).sort((a,b)=>String(b.pdate||'').localeCompare(String(a.pdate||'')));
+  const exp=can('export_data')?`<button class="btn" style="font-size:11px;padding:3px 10px" onclick="crmExclExport()">⬇️ Excel</button>`:'';
+  const table=rows.length?`<div class="crm-card" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h3 style="margin:0">📋 ${LX('القائمة','List')} (${data.length})</h3><div style="display:flex;gap:6px">${crmClearColFBtn(page)}${exp}</div></div><table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('الباقة','Package')}</th><th>${LX('مقدم الخدمة','Provider')}</th><th>${LX('التاريخ','Date')}</th></tr>${crmColFilterRow(page,FCOLS,rows)}</thead><tbody>${data.slice(0,400).map(t=>`<tr><td>${esc(t._name||'—')}</td><td dir=ltr>${esc(t._phone)}</td><td>${esc(t.item||t.cat)}</td><td>${esc(t.trainer||'—')}</td><td style="white-space:nowrap">${esc(String(t.pdate||'').slice(0,10)||'—')}</td></tr>`).join('')}</tbody></table>${data.length>400?`<div class="crm-empty">${LX('عرض ٤٠٠ من','Showing 400 of')} ${data.length}</div>`:''}</div>`:`<div class="crm-empty">${LX('لا توجد باقات مستبعدة — أضف أسماءها من الإعدادات','No excluded packages — add their names in Settings')}</div>`;
+  return `<h3 style="margin:0 0 4px;font-size:16px">🍎 ${LX('الباقات المستبعدة من المبيعات','Packages excluded from sales')}</h3>${note}${stats}<div style="display:grid;grid-template-columns:1fr;gap:12px">${summary}</div>${table}`;
+}
+function crmExclExport(){
+  if(!can('export_data')){toast(LX('لا صلاحية','No permission'));return;}
+  const rows=[[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الباقة','Package'),LX('مقدم الخدمة','Provider'),LX('التاريخ','Date')]];
+  CUSTOMERS.forEach(c=>{if(!crmCustAllowed(c))return;(c.txns||[]).forEach(t=>{if(crmIsAddon(t))rows.push([c.name,c.phone,t.item||t.cat,t.trainer||'',String(t.pdate||'').slice(0,10)]);});});
+  crmExportXlsx(rows,'excluded-packages.xlsx');
+}
 // ---------- إعدادات الـ CRM ----------
 function crmSettings(){
   if(!isSuperAdmin())return `<div class="crm-empty">${LX('الإعدادات مخصصة للمدير الأساسي فقط','Settings are for the main admin only')}</div>`;
@@ -5223,7 +5311,7 @@ function crmSettings(){
 }
 function crmUploadLog(){
   const arr=(CRM_UPLOADS||[]).slice().sort((a,b)=>b.id-a.id).slice(0,50);
-  const pageName=p=>p==='sales'?LX('مبيعات','Sales'):p==='free'?LX('حصص مجانية','Free sessions'):p==='leads'?LX('عملاء جدد','Leads'):p;
+  const pageName=p=>p==='sales'?LX('مبيعات','Sales'):p==='update'?LX('تحديث بيانات','Data update'):p==='free'?LX('حصص مجانية','Free sessions'):p==='leads'?LX('عملاء جدد','Leads'):p;
   const canUndo=(typeof isSuperAdmin==='function'&&isSuperAdmin());
   const rows=arr.length?arr.map(u=>{
     const issue=(u.note?`<span class="crm-pill pill-red">${esc(u.note)}</span> `:'')+(u.dupe>0?`<span class="crm-pill pill-amber">${LX('مكرر','dup')} ${u.dupe}</span> `:'')+(u.skipped>0?`<span class="crm-pill pill-amber">${LX('متخطّى','skipped')} ${u.skipped}</span>`:'');
