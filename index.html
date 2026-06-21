@@ -3680,11 +3680,14 @@ function crmRealTxns(c){return (c.txns||[]).filter(t=>!crmIsTrial(t)&&!crmIsAddo
 function crmHasReal(c){return crmRealTxns(c).length>0;}
 // New vs Renewal is DERIVED from the customer's own real (paid, non-trial)
 // history (earliest = new), NOT from the file's Subscription Type column.
+// New vs Renewal: trust the file's "Subscription Type" column (the source system knows the
+// customer's FULL history); fall back to earliest-txn derivation only when the column is missing.
+function crmTxnType(t,i){const ft=String(t.type||'').trim();if(/renew/i.test(ft))return 'Renewal';if(/new/i.test(ft))return 'New';return i===0?'New':'Renewal';}
 function crmTxnsWithType(){
   const out=[];
   CUSTOMERS.forEach(c=>{
     const ts=crmRealTxns(c).slice().sort((a,b)=>crmTxnDate(a)-crmTxnDate(b));
-    ts.forEach((t,i)=>out.push(Object.assign({phone:c.phone,name:c.name,_dtype:i===0?'New':'Renewal'},t)));
+    ts.forEach((t,i)=>out.push(Object.assign({phone:c.phone,name:c.name,_dtype:crmTxnType(t,i)},t)));
   });
   return out;
 }
