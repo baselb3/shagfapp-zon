@@ -3669,6 +3669,11 @@ function crmActiveSubs(c){
   (c.txns||[]).forEach(t=>{if((t.paid||0)<=0||crmIsTrial(t)||crmIsAddon(t)||t.refunded)return;const k=t.cat||t.item||'?';if(!byCat[k]||String(crmEnd(t)||'')>String(crmEnd(byCat[k])||''))byCat[k]=t;});
   return Object.values(byCat).filter(t=>{const dl=crmDaysLeft(crmEnd(t));return dl!==null&&dl>=0;});
 }
+// The customer's CURRENT subscription = their real, paid (non-trial/non-addon) sub with the FURTHEST
+// expiry — across ALL packages. Renewal/active/expiring are judged on THIS (per phone), so a customer
+// with any still-active sub isn't flagged, and a renewed customer's future sub wins. Includes expired.
+function crmCustLatest(c){let best=null;crmRealTxns(c).forEach(t=>{if((t.paid||0)<=0||t.refunded)return;if(!best||String(crmEnd(t)||'')>String(crmEnd(best)||''))best=t;});return best;}
+function crmCustDaysLeft(c){const t=crmCustLatest(c);return t?crmDaysLeft(crmEnd(t)):null;}
 function crmAllTxns(){const a=[];CUSTOMERS.forEach(c=>(c.txns||[]).forEach(t=>a.push(Object.assign({phone:c.phone,name:c.name},t))));return a;}
 function crmTxnDate(t){const s=t.pdate||t.invoiceDate||t.expiry||'';const day=String(s).slice(0,10);if(!/^\d{4}-\d{2}-\d{2}$/.test(day))return 0;const d=new Date(day+'T00:00:00');return isNaN(d)?0:d.getTime();}
 // A "Free trial (one session)" is a free session, NOT a subscription —
@@ -4137,8 +4142,8 @@ function crmDashWidgets(){
    {key:'co_complaints_total',group:'company',ic:'📋',ar:'إجمالي الشكاوى',en:'Total complaints',perm:['manage_complaints'],compute:()=>({v:C.length})},
    {key:'co_waitlist',group:'company',ic:'🕓',ar:'قائمة الانتظار',en:'Waiting list',perm:['manage_complaints','manage_followups'],pii:true,compute:()=>({v:(WAITLIST||[]).length}),detail:()=>({cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('المدينة','City'),LX('الزون','Zone')],rows:(WAITLIST||[]).map(w=>[w.name||'—',w.phone||'',w.cityName||cityLabel(w.city),w.zoneId!=null?'Z'+w.zoneId:'—'])})},
    // 💰 مبيعات — محكومة بصلاحية «داش بورد المبيعات» — تتأثر بفلتر الفترة
-   {key:'co_active_subs',group:'company',ic:'🔵',ar:'اشتراكات نشطة',en:'Active subscriptions',perm:['view_dashboard'],pii:true,compute:()=>{let n=0;CUSTOMERS.forEach(c=>{n+=crmActiveSubs(c).length;});return {v:n};},detail:()=>{const r=[];CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>r.push([c.name,c.phone,t.cat||t.item,crmFmtExpiry(crmEnd(t)),t.trainer||'—'])));return {cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الاشتراك','Subscription'),LX('ينتهي','Expires'),LX('مقدم الخدمة','Provider')],rows:r};}},
-   {key:'co_expiring_month',group:'company',ic:'🔔',ar:'اشتراكات تنتهي خلال شهر',en:'Subs expiring within a month',perm:['view_dashboard'],color:'#D97706',pii:true,compute:()=>{let n=0;CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{const dl=crmDaysLeft(crmEnd(t));if(dl!==null&&dl>=0&&dl<=31)n++;}));return {v:n};},detail:()=>{const r=[];CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{const dl=crmDaysLeft(crmEnd(t));if(dl!==null&&dl>=0&&dl<=31)r.push([c.name,c.phone,t.cat||t.item,crmFmtExpiry(crmEnd(t)),t.trainer||'—']);}));return {cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الاشتراك','Subscription'),LX('ينتهي','Expires'),LX('مقدم الخدمة','Provider')],rows:r};}},
+   {key:'co_active_subs',group:'company',ic:'🔵',ar:'عملاء باشتراك فعّال',en:'Customers with an active sub',perm:['view_dashboard'],pii:true,compute:()=>{let n=0;CUSTOMERS.forEach(c=>{const dl=crmCustDaysLeft(c);if(dl!==null&&dl>=0)n++;});return {v:n};},detail:()=>{const r=[];CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t)return;const dl=crmDaysLeft(crmEnd(t));if(dl!==null&&dl>=0)r.push([c.name,c.phone,t.cat||t.item,crmFmtExpiry(crmEnd(t)),t.trainer||'—']);});return {cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الاشتراك','Subscription'),LX('ينتهي','Expires'),LX('مقدم الخدمة','Provider')],rows:r};}},
+   {key:'co_expiring_month',group:'company',ic:'🔔',ar:'تنتهي خلال شهر (يجددون)',en:'Expiring within a month',perm:['view_dashboard'],color:'#D97706',pii:true,compute:()=>{let n=0;CUSTOMERS.forEach(c=>{const dl=crmCustDaysLeft(c);if(dl!==null&&dl>=0&&dl<=31)n++;});return {v:n};},detail:()=>{const r=[];CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t)return;const dl=crmDaysLeft(crmEnd(t));if(dl!==null&&dl>=0&&dl<=31)r.push([c.name,c.phone,t.cat||t.item,crmFmtExpiry(crmEnd(t)),t.trainer||'—']);});return {cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الاشتراك','Subscription'),LX('ينتهي','Expires'),LX('مقدم الخدمة','Provider')],rows:r};}},
    {key:'co_new_month',group:'company',ic:'🆕',ar:'اشتراكات جديدة',en:'New subscriptions',perm:['view_dashboard'],pii:true,compute:()=>({v:crmTxnsWithType().filter(t=>t._dtype==='New'&&crmDashPeriodMatch(t)).length}),detail:()=>({cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الباقة','Package'),LX('مقدم الخدمة','Provider'),LX('التاريخ','Date')],rows:crmTxnsWithType().filter(t=>t._dtype==='New'&&crmDashPeriodMatch(t)).map(t=>[t.name,t.phone,t.item||t.cat,t.trainer||'—',String(t.pdate||'').slice(0,10)])})},
    {key:'co_renew_month',group:'company',ic:'🔁',ar:'تجديدات',en:'Renewals',perm:['view_dashboard'],pii:true,compute:()=>({v:crmTxnsWithType().filter(t=>t._dtype==='Renewal'&&crmDashPeriodMatch(t)).length}),detail:()=>({cols:[LX('العميل','Customer'),LX('الجوال','Mobile'),LX('الباقة','Package'),LX('مقدم الخدمة','Provider'),LX('التاريخ','Date')],rows:crmTxnsWithType().filter(t=>t._dtype==='Renewal'&&crmDashPeriodMatch(t)).map(t=>[t.name,t.phone,t.item||t.cat,t.trainer||'—',String(t.pdate||'').slice(0,10)])})},
    {key:'co_revenue_month',group:'company',ic:'💰',ar:isSuperAdmin()?'الإيراد (ريال)':'إيراد هذا الشهر (ريال)',en:isSuperAdmin()?'Revenue (SAR)':'Revenue this month (SAR)',perm:['view_dashboard'],color:'#166534',compute:()=>{const mine=!isSuperAdmin();const tx=crmTxnsWithType().filter(t=>mine?crmInMonth(t):crmDashPeriodMatch(t));return {v:crmMoney(tx.reduce((s,t)=>s+((t.paid||0)-(t.refunded?(t.refundAmount||0):0)),0)),sub:mine?LX('الشهر الحالي فقط','Current month only'):''};}},
@@ -4164,8 +4169,11 @@ function crmWlBar(ctx){
 function crmRenewBacklog(ctx){
   const out=[];const today=new Date();today.setHours(23,59,59,0);
   CUSTOMERS.forEach(c=>{
-    const byCat={};crmRealTxns(c).forEach(t=>{if((t.paid||0)<=0||t.refunded)return;const k=t.cat||t.item||'?';if(!byCat[k]||String(crmEnd(t))>String(crmEnd(byCat[k])))byCat[k]=t;});
-    Object.values(byCat).forEach(t=>{if(!crmProvAllowed(t.trainer))return;const end=new Date(String(crmEnd(t)).slice(0,10)+'T00:00:00');if(isNaN(end))return;const dl=Math.round((end-today)/86400000);if(dl>7)return;if(!crmWlMatch(ctx,crmEnd(t)))return;out.push({c,t,dl});});
+    const t=crmCustLatest(c);if(!t||!crmProvAllowed(t.trainer))return; // one row per customer = their furthest sub
+    const end=new Date(String(crmEnd(t)).slice(0,10)+'T00:00:00');if(isNaN(end))return;
+    const dl=Math.round((end-today)/86400000);if(dl>7)return; // expiring within a week or already expired
+    if(!crmWlMatch(ctx,crmEnd(t)))return;
+    out.push({c,t,dl});
   });
   return out.sort((a,b)=>a.dl-b.dl);
 }
@@ -4234,7 +4242,7 @@ function crmDashboard(){
   // expiry buckets (forward-looking, not period)
   let expToday=0,exp7=0,expMonth=0,activeTotal=0;
   const now=new Date(),mEnd=new Date(now.getFullYear(),now.getMonth()+1,0);
-  CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{activeTotal++;const dl=crmDaysLeft(crmEnd(t));if(dl===0)expToday++;if(dl>=0&&dl<=7)exp7++;const ed=new Date(String(crmEnd(t)).slice(0,10));if(!isNaN(ed)&&ed<=mEnd&&dl>=0)expMonth++;}));
+  CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t)return;const dl=crmDaysLeft(crmEnd(t));if(dl===null||dl<0)return;activeTotal++;if(dl===0)expToday++;if(dl>=0&&dl<=7)exp7++;const ed=new Date(String(crmEnd(t)).slice(0,10));if(!isNaN(ed)&&ed<=mEnd)expMonth++;});
   const openC=(CRM_SVC.complaints||[]).filter(x=>x.status!=='resolved').length;
   const freeConfNoSub=FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)).length;
   const followToday=FREE_SESSIONS.filter(f=>f.status!=='cancelled'&&!crmIsConverted(f)&&crmFollowDue(f)).length;
@@ -4314,7 +4322,7 @@ function crmDrillBody(k){
   if(k==='provider'){const prov={};ptx.forEach(t=>{if(t.trainer){if(!prov[t.trainer])prov[t.trainer]={n:0,sum:0};prov[t.trainer].n++;prov[t.trainer].sum+=(t.paid||0);}});return tbl([H.prov,H.ops,H.rev],Object.entries(prov).sort((a,b)=>b[1].sum-a[1].sum).map(([p,v])=>`<tr><td>${esc(p)}</td><td>${v.n}</td><td>${crmMoney(v.sum)}</td></tr>`));}
   if(k==='active'||k==='exp7'||k==='expToday'||k==='expMonth'){
     const rows=[];const now=new Date(),mEnd=new Date(now.getFullYear(),now.getMonth()+1,0);
-    CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{const dl=crmDaysLeft(crmEnd(t));let ok=k==='active';if(k==='exp7')ok=dl>=0&&dl<=7;if(k==='expToday')ok=dl===0;if(k==='expMonth'){const ed=new Date(String(crmEnd(t)).slice(0,10));ok=!isNaN(ed)&&ed<=mEnd&&dl>=0;}if(ok)rows.push(`<tr><td>${esc(c.name)}</td><td dir=ltr>${esc(c.phone)}</td><td>${esc(t.cat||t.item)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td><td>${esc(t.trainer||'—')}</td></tr>`);}));
+    CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t)return;const dl=crmDaysLeft(crmEnd(t));if(dl===null||dl<0)return;let ok=k==='active';if(k==='exp7')ok=dl>=0&&dl<=7;if(k==='expToday')ok=dl===0;if(k==='expMonth'){const ed=new Date(String(crmEnd(t)).slice(0,10));ok=!isNaN(ed)&&ed<=mEnd&&dl>=0;}if(ok)rows.push(`<tr><td>${esc(c.name)}</td><td dir=ltr>${esc(c.phone)}</td><td>${esc(t.cat||t.item)}</td><td style="white-space:nowrap">${crmFmtExpiry(crmEnd(t))}</td><td>${esc(t.trainer||'—')}</td></tr>`);});
     return tbl([H.cust,H.mob,H.sub,H.exp,H.prov],rows);
   }
   if(k==='complaints')return tbl([H.cust,H.comp,H.prio,H.link],(CRM_SVC.complaints||[]).filter(x=>!crmIsResolved(x)).map(x=>`<tr><td>${esc(x.customer)}</td><td>${esc(x.subject)}</td><td>${crmPrioPill(x.priority)}</td><td>${x.link?`<a href="${esc(x.link)}" target="_blank">🔗</a>`:'—'}</td></tr>`));
@@ -4658,27 +4666,16 @@ function crmFreeFollowDateMatch(f){
   return true;
 }
 function crmFollowup(){
-  const exp=[];CUSTOMERS.forEach(c=>crmActiveSubs(c).forEach(t=>{if(crmExpMatch(t)&&crmProvAllowed(t.trainer))exp.push({c,t,dl:crmDaysLeft(crmEnd(t))});}));
+  // per CUSTOMER: their furthest (current) sub decides everything — renewed customers drop out automatically
+  const exp=[];CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(t&&crmExpMatch(t)&&crmProvAllowed(t.trainer))exp.push({c,t,dl:crmDaysLeft(crmEnd(t))});});
   exp.sort((a,b)=>a.dl-b.dl);
   const pending=FREE_SESSIONS.filter(f=>f.status==='confirmed'&&!crmIsConverted(f)&&crmProvAllowed(f.trainer));
-  // stats: subscriptions expiring THIS MONTH, how many already renewed vs should-renew
   const now=new Date(),mEnd=new Date(now.getFullYear(),now.getMonth()+1,0);
-  let expM=0,renewedM=0;
-  CUSTOMERS.forEach(c=>{
-    const real=crmRealTxns(c);
-    crmActiveSubs(c).forEach(t=>{
-      if(!crmProvAllowed(t.trainer))return;
-      const ed=new Date(String(crmEnd(t)).slice(0,10));const dl=crmDaysLeft(crmEnd(t));
-      if(!isNaN(ed)&&ed<=mEnd&&dl>=0){expM++;
-        const renewed=real.some(x=>x.inv!==t.inv&&(x.cat||'')===(t.cat||'')&&String(crmEnd(x))>String(crmEnd(t)));
-        if(renewed)renewedM++;
-      }
-    });
-  });
-  const shouldRenew=expM-renewedM;
+  let expM=0,expiredC=0;
+  CUSTOMERS.forEach(c=>{const t=crmCustLatest(c);if(!t||!crmProvAllowed(t.trainer))return;const ed=new Date(String(crmEnd(t)).slice(0,10));const dl=crmDaysLeft(crmEnd(t));if(isNaN(ed))return;if(dl>=0&&ed<=mEnd)expM++;else if(dl<0)expiredC++;});
   const M=(l,v,col)=>`<div class="metric"><div class="ml">${l}</div><div class="mv"${col?` style="color:${col}"`:''}>${v}</div></div>`;
   const EF=[['today',LX('تنتهي اليوم','Today')],['3d',LX('بعد ٣ أيام','In 3 days')],['week',LX('بعد أسبوع','In a week')],['month',LX('نهاية الشهر','End of month')],['date',LX('تاريخ محدد','Custom date')]];
-  let html=`<div class="metric-grid">${M(LX('ينتهي هذا الشهر','Expiring this month'),expM)}${M(LX('منهم جدّدوا','Renewed'),renewedM,'#16A34A')}${M(LX('مفروض يجددون','Should renew'),shouldRenew,'#DC2626')}${M(LX('فري سشن للمتابعة','Free sessions to follow'),pending.length,'#D97706')}</div>
+  let html=`<div class="metric-grid">${M(LX('تنتهي هذا الشهر (يجددون)','Expiring this month'),expM,'#DC2626')}${M(LX('منتهية فعلاً (بدون تجديد)','Already expired'),expiredC,'#991B1B')}${M(LX('فري سشن للمتابعة','Free sessions to follow'),pending.length,'#D97706')}</div>
   <div class="crm-card"><h3>🔔 ${LX('اشتراكات تقترب من الانتهاء — تابِع التجديد','Subscriptions expiring soon — follow renewal')}</h3>
     <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:10px">${EF.map(b=>`<button class="crm-subbtn ${crmState.expF===b[0]?'on':''}" onclick="crmSetExpF('${b[0]}')">${b[1]}</button>`).join('')}<input type="date" value="${esc(crmState.expDate)}" onchange="crmSetExpDate(this.value)" style="width:auto;font-size:11px;padding:3px 6px"></div>`;
   const expPage='followup-exp';
