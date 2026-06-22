@@ -1006,27 +1006,48 @@ async function saveOnly(...names){
 // Re-read the doc from the server INSIDE a Firestore transaction, apply the
 // change to FRESH server data, then write back — so concurrent writes from
 // other tabs aren't clobbered. (CRM customers/free_sessions/crm_service/crm_config.)
+// Guard against double-submits: while a write to a given doc is in flight we
+// block a second write to the SAME doc (so an impatient employee clicking the
+// save button 3× doesn't fire 3 transactions) and lock the visible buttons so
+// the page clearly shows it's working.
+const _mutInflight={};
+function crmLockUI(on){
+  try{
+    document.querySelectorAll('#modalBox button, #crmBody button').forEach(b=>{
+      if(on){ if(!b.dataset._wlock){ b.dataset._wlock='1'; b.disabled=true; b.style.opacity='0.55'; b.style.cursor='wait'; } }
+      else if(b.dataset._wlock){ delete b.dataset._wlock; b.disabled=false; b.style.opacity=''; b.style.cursor=''; }
+    });
+  }catch(_){}
+}
 async function mutateListDoc(docName, mutator){
+  if(_mutInflight[docName]){ try{toast(LX('⏳ جارٍ الحفظ، انتظر لحظة…','⏳ Saving, please wait…'));}catch(_){} return new Promise(()=>{}); }
+  _mutInflight[docName]=true; crmLockUI(true);
   const ref = db.collection('app').doc(docName);
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const current = snap.exists ? (snap.data().list || []) : [];
-    const next = mutator(current);
-    if(!Array.isArray(next)) throw new Error('mutator must return array');
-    tx.set(ref, {list: next});
-    return next;
-  });
+  try{
+    return await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.exists ? (snap.data().list || []) : [];
+      const next = mutator(current);
+      if(!Array.isArray(next)) throw new Error('mutator must return array');
+      tx.set(ref, {list: next});
+      return next;
+    });
+  } finally { _mutInflight[docName]=false; crmLockUI(false); }
 }
 async function mutateMapDoc(docName, mutator){
+  if(_mutInflight[docName]){ try{toast(LX('⏳ جارٍ الحفظ، انتظر لحظة…','⏳ Saving, please wait…'));}catch(_){} return new Promise(()=>{}); }
+  _mutInflight[docName]=true; crmLockUI(true);
   const ref = db.collection('app').doc(docName);
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const current = snap.exists ? (snap.data().map || {}) : {};
-    const next = mutator(current);
-    if(!next || typeof next !== 'object' || Array.isArray(next)) throw new Error('mutator must return object');
-    tx.set(ref, {map: next});
-    return next;
-  });
+  try{
+    return await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.exists ? (snap.data().map || {}) : {};
+      const next = mutator(current);
+      if(!next || typeof next !== 'object' || Array.isArray(next)) throw new Error('mutator must return object');
+      tx.set(ref, {map: next});
+      return next;
+    });
+  } finally { _mutInflight[docName]=false; crmLockUI(false); }
 }
 
 // Mutable pricing array (starts as copy of default)
@@ -3672,8 +3693,8 @@ function crmActiveSubs(c){
 // The customer's CURRENT subscription = their real, paid (non-trial/non-addon) sub with the FURTHEST
 // expiry — across ALL packages. Renewal/active/expiring are judged on THIS (per phone), so a customer
 // with any still-active sub isn't flagged, and a renewed customer's future sub wins. Includes expired.
-function crmCustLatest(c){let best=null;crmRealTxns(c).forEach(t=>{if((t.paid||0)<=0||t.refunded)return;if(!best||String(crmEnd(t)||'')>String(crmEnd(best)||''))best=t;});return best;}
-function crmCustDaysLeft(c){const t=crmCustLatest(c);return t?crmDaysLeft(crmEnd(t)):null;}
+function crmCustLatest(c){if('_latestCache' in c)return c._latestCache;let best=null;crmRealTxns(c).forEach(t=>{if((t.paid||0)<=0||t.refunded)return;if(!best||String(crmEnd(t)||'')>String(crmEnd(best)||''))best=t;});return best;}
+function crmCustDaysLeft(c){if('_dlCache' in c)return c._dlCache;const t=crmCustLatest(c);return t?crmDaysLeft(crmEnd(t)):null;}
 function crmAllTxns(){const a=[];CUSTOMERS.forEach(c=>(c.txns||[]).forEach(t=>a.push(Object.assign({phone:c.phone,name:c.name},t))));return a;}
 function crmTxnDate(t){const s=t.pdate||t.invoiceDate||t.expiry||'';const day=String(s).slice(0,10);if(!/^\d{4}-\d{2}-\d{2}$/.test(day))return 0;const d=new Date(day+'T00:00:00');return isNaN(d)?0:d.getTime();}
 // A "Free trial (one session)" is a free session, NOT a subscription —
@@ -3681,8 +3702,21 @@ function crmTxnDate(t){const s=t.pdate||t.invoiceDate||t.expiry||'';const day=St
 function crmIsTrial(t){return /trial/i.test(t.item||t.cat||'')||/تجربة/.test(t.item||'');}
 // باقات إضافية تُعطى مع الاشتراك (مثل Minute Nutrition) — لا تُحتسب اشتراكاً ولا جديد/تجديد
 function crmIsAddon(t){const s=String(t.item||t.cat||'').toLowerCase();return (CRM_CFG.addonPackages||[]).some(a=>{a=String(a||'').trim().toLowerCase();return a&&s.indexOf(a)>=0;});}
-function crmRealTxns(c){return (c.txns||[]).filter(t=>!crmIsTrial(t)&&!crmIsAddon(t));}
+function crmRealTxns(c){if(c._realCache)return c._realCache;return (c.txns||[]).filter(t=>!crmIsTrial(t)&&!crmIsAddon(t));}
 function crmHasReal(c){return crmRealTxns(c).length>0;}
+// Precompute the per-customer derived values (real txns, latest sub, days-left)
+// ONCE per render instead of re-filtering/re-sorting each customer's packages on
+// every widget/list call. Cache lives only in memory (never written to Firestore).
+function crmReindex(){
+  for(const c of CUSTOMERS){
+    const real=(c.txns||[]).filter(t=>!crmIsTrial(t)&&!crmIsAddon(t));
+    c._realCache=real;
+    let best=null;
+    real.forEach(t=>{if((t.paid||0)<=0||t.refunded)return;if(!best||String(crmEnd(t)||'')>String(crmEnd(best)||''))best=t;});
+    c._latestCache=best;
+    c._dlCache=best?crmDaysLeft(crmEnd(best)):null;
+  }
+}
 // New vs Renewal is DERIVED from the customer's own real (paid, non-trial)
 // history (earliest = new), NOT from the file's Subscription Type column.
 // New vs Renewal: trust the file's "Subscription Type" column (the source system knows the
@@ -3995,6 +4029,7 @@ async function crmOnLogin(){
 // ---------- rendering ----------
 function crmRender(){
   const b=document.getElementById('crmBody');if(!b)return;
+  crmReindex();
   if(crmState.sec==='dash')b.innerHTML=can('view_dashboard')?crmDashboard():`<div class="crm-empty">${LX('ليس لديك صلاحية عرض الداش بورد','You don’t have dashboard permission')}</div>`;
   else if(crmState.sec==='mydash')b.innerHTML=can('view_my_dashboard')?crmMyDash():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
   else if(crmState.sec==='newdash')b.innerHTML=can('view_new_dashboard')?crmNewDash():`<div class="crm-empty">${LX('ليس لديك صلاحية','No permission')}</div>`;
