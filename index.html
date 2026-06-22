@@ -1151,6 +1151,24 @@ async function crmMigrateToShards(){
     crmRender();
   }catch(e){console.error('migrate',e);toast(LX('❌ فشل التقسيم: ','❌ Migration failed: ')+e.message);}
 }
+// Undo migration: merge all shards (the live source while sharded) back into the
+// single app/customers doc and flip the marker off. Safe at any time, even after
+// edits — it rebuilds the single doc from current shard data. Shard docs are left
+// in place (harmless; a future re-migration overwrites them from app/customers).
+async function crmRevertSharding(){
+  if(!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Super-admin only'));return;}
+  if(!confirm(LX('الرجوع لتخزين العملاء في مستند واحد؟ تُدمج كل الشرائح في app/customers. آمن ولا يفقد أي بيانات.','Revert to single-doc storage? All shards merge back into app/customers. Safe, no data loss.')))return;
+  try{
+    const snaps=await Promise.all(Array.from({length:CUST_SHARDS},(_,i)=>db.collection('app').doc(crmShardName(i)).get()));
+    const all=[];snaps.forEach(s=>{if(s.exists)(s.data().list||[]).forEach(c=>all.push(c));});
+    await db.collection('app').doc('customers').set({list:all});
+    await db.collection('app').doc('customers_meta').set({sharded:false,revertedAt:new Date().toISOString(),count:all.length});
+    _custSharded=false;CUSTOMERS=all;
+    try{logHistory(LX('إلغاء تقسيم العملاء','Revert customer sharding'),all.length+' '+LX('عميل','customers'),'edit');}catch(e){}
+    toast(LX('↩️ تم الرجوع للمستند الواحد ('+all.length+' عميل)','↩️ Reverted to single doc ('+all.length+' customers)'));
+    crmRender();
+  }catch(e){console.error('revert',e);toast(LX('❌ فشل الرجوع: ','❌ Revert failed: ')+e.message);}
+}
 
 // Mutable pricing array (starts as copy of default)
 const PRICING=JSON.parse(JSON.stringify(PRICING_TABLE));
@@ -5461,6 +5479,7 @@ function crmPerfCard(){
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn" style="font-size:12px;color:var(--blue);border-color:#BFDBFE" onclick="crmExportCustomersBackup()">⬇️ ${LX('١) نزّل نسخة احتياطية','1) Download backup')}</button>
       ${_custSharded?'':`<button class="btn btn-primary" style="font-size:12px" onclick="crmMigrateToShards()">⚡ ${LX('٢) فعّل التقسيم','2) Enable sharding')}</button>`}
+      ${_custSharded?`<button class="btn" style="font-size:12px" onclick="crmRevertSharding()">↩️ ${LX('الرجوع للمستند الواحد','Revert to single doc')}</button>`:''}
     </div>
     <div style="font-size:11px;color:#B91C1C;margin-top:8px">${LX('انزل النسخة الاحتياطية أولاً. المستند القديم يبقى محفوظاً ولا يُحذف.','Download the backup first. The old doc is kept and never deleted.')}</div>
   </div>`;
