@@ -1050,6 +1050,108 @@ async function mutateMapDoc(docName, mutator){
   } finally { _mutInflight[docName]=false; crmLockUI(false); }
 }
 
+// ===================== CUSTOMERS STORAGE (shardable) =====================
+// The customers collection used to live in ONE Firestore doc (app/customers),
+// so every single edit rewrote the whole array (slow, and a hard 1MB ceiling).
+// We can split it across CUST_SHARDS docs (app/customers_0 … customers_15) keyed
+// by a stable hash of the phone, so an edit rewrites only ONE shard (~1/16 the
+// size) and the ceiling rises to ~16MB. A marker doc (app/customers_meta) flags
+// whether shards are live; until migration runs we stay on the legacy single doc.
+// Every write path below works in BOTH modes via _custSharded.
+const CUST_SHARDS=16;
+let _custSharded=false;
+function crmShardOf(phone){let h=0;const s=String(phone||'');for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0;}return Math.abs(h)%CUST_SHARDS;}
+function crmShardName(i){return 'customers_'+i;}
+// Load customers into memory (sharded if migrated, else legacy single doc).
+async function loadCustomers(){
+  const meta=await db.collection('app').doc('customers_meta').get();
+  if(meta.exists && meta.data().sharded){
+    _custSharded=true;
+    const snaps=await Promise.all(Array.from({length:CUST_SHARDS},(_,i)=>db.collection('app').doc(crmShardName(i)).get()));
+    const all=[];snaps.forEach(s=>{if(s.exists)(s.data().list||[]).forEach(c=>all.push(c));});
+    CUSTOMERS=all;
+  }else{
+    _custSharded=false;
+    const cu=await db.collection('app').doc('customers').get();
+    CUSTOMERS=cu.exists?(cu.data().list||[]):[];
+  }
+}
+// Edit ONE customer (found by phone). fn(customer) -> new customer, or null to
+// delete. No-op if the phone isn't found. Updates the in-memory CUSTOMERS too.
+async function crmWriteCustomer(phone,fn){
+  const apply=(list)=>{
+    const i=list.findIndex(c=>c.phone===phone);
+    if(i<0)return list;
+    const nc=fn(list[i]);
+    const copy=list.slice();
+    if(nc==null)copy.splice(i,1);else copy[i]=nc;
+    return copy;
+  };
+  if(_custSharded){
+    const sid=crmShardName(crmShardOf(phone));
+    const newShard=await mutateListDoc(sid,apply);
+    const i=CUSTOMERS.findIndex(c=>c.phone===phone);
+    const updated=newShard.find(c=>c.phone===phone);
+    if(i>=0){if(updated)CUSTOMERS[i]=updated;else CUSTOMERS.splice(i,1);}
+    return CUSTOMERS;
+  }
+  const n=await mutateListDoc('customers',apply);CUSTOMERS=n;return CUSTOMERS;
+}
+// Bulk rewrite (import / undo-batch): mergeFn(currentFullList) -> newFullList.
+// In sharded mode it reads fresh shards, applies, re-buckets and writes shards.
+async function crmBulkRewrite(mergeFn){
+  if(_mutInflight['__custbulk']){try{toast(LX('⏳ جارٍ الحفظ، انتظر لحظة…','⏳ Saving, please wait…'));}catch(_){}return new Promise(()=>{});}
+  _mutInflight['__custbulk']=true;crmLockUI(true);
+  try{
+    if(!_custSharded){const n=await mutateListDoc('customers',mergeFn);CUSTOMERS=n;return n;}
+    const snaps=await Promise.all(Array.from({length:CUST_SHARDS},(_,i)=>db.collection('app').doc(crmShardName(i)).get()));
+    const cur=[];snaps.forEach(s=>{if(s.exists)(s.data().list||[]).forEach(c=>cur.push(c));});
+    const next=mergeFn(cur);
+    if(!Array.isArray(next))throw new Error('mergeFn must return array');
+    const buckets=Array.from({length:CUST_SHARDS},()=>[]);
+    next.forEach(c=>buckets[crmShardOf(c.phone)].push(c));
+    await Promise.all(buckets.map((b,i)=>db.collection('app').doc(crmShardName(i)).set({list:b})));
+    CUSTOMERS=next;return next;
+  }finally{_mutInflight['__custbulk']=false;crmLockUI(false);}
+}
+// Wipe the customer store (used by the danger zone), both modes.
+async function crmClearCustomersStore(){
+  if(_custSharded){await Promise.all(Array.from({length:CUST_SHARDS},(_,i)=>db.collection('app').doc(crmShardName(i)).set({list:[]})));}
+  else{await db.collection('app').doc('customers').set({list:[]});}
+  CUSTOMERS=[];
+}
+// Download a full JSON backup of the customers doc BEFORE migrating (safety net).
+async function crmExportCustomersBackup(){
+  if(!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Super-admin only'));return;}
+  let data;
+  try{const cu=await db.collection('app').doc('customers').get();data=cu.exists?(cu.data().list||[]):[];}
+  catch(e){toast(LX('❌ فشل القراءة','❌ Read failed'));return;}
+  const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),count:data.length,list:data},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='customers-backup-'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a);a.click();a.remove();
+  toast(LX('💾 تم تنزيل النسخة الاحتياطية ('+data.length+' عميل)','💾 Backup downloaded ('+data.length+' customers)'));
+}
+// One-time migration: split the legacy customers doc into CUST_SHARDS docs and
+// flip the marker. KEEPS the old app/customers doc intact as a point-in-time
+// backup (we never delete it here). Re-running is safe (idempotent overwrite).
+async function crmMigrateToShards(){
+  if(!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Super-admin only'));return;}
+  if(!confirm(LX('تقسيم بيانات العملاء لتسريع الحفظ؟ تأكّد أنك نزّلت النسخة الاحتياطية أولاً. المستند القديم يبقى كما هو كاحتياطي.','Split customer data to speed up saving? Make sure you downloaded the backup first. The old doc is kept intact as a backup.')))return;
+  try{
+    const cu=await db.collection('app').doc('customers').get();
+    const list=cu.exists?(cu.data().list||[]):[];
+    const buckets=Array.from({length:CUST_SHARDS},()=>[]);
+    list.forEach(c=>buckets[crmShardOf(c.phone)].push(c));
+    await Promise.all(buckets.map((b,i)=>db.collection('app').doc(crmShardName(i)).set({list:b})));
+    await db.collection('app').doc('customers_meta').set({sharded:true,migratedAt:new Date().toISOString(),count:list.length,shards:CUST_SHARDS});
+    _custSharded=true;CUSTOMERS=list;
+    try{logHistory(LX('ترحيل العملاء لشرائح','Migrate customers to shards'),list.length+' '+LX('عميل','customers'),'edit');}catch(e){}
+    toast(LX('✅ تم التقسيم بنجاح ('+list.length+' عميل على '+CUST_SHARDS+' شرائح)','✅ Migrated ('+list.length+' customers across '+CUST_SHARDS+' shards)'));
+    crmRender();
+  }catch(e){console.error('migrate',e);toast(LX('❌ فشل التقسيم: ','❌ Migration failed: ')+e.message);}
+}
+
 // Mutable pricing array (starts as copy of default)
 const PRICING=JSON.parse(JSON.stringify(PRICING_TABLE));
 
@@ -3762,8 +3864,7 @@ function crmGeocode(addr){
 // ---------- load / save ----------
 async function loadCrmData(){
   try{
-    const cu=await db.collection('app').doc('customers').get();
-    CUSTOMERS=cu.exists?(cu.data().list||[]):[];
+    await loadCustomers();
   }catch(e){console.error('load customers',e);}
   try{
     const fs=await db.collection('app').doc('free_sessions').get();
@@ -3887,7 +3988,7 @@ function importSales(rows){
   });
   const parsedTotal=Object.values(parsed).reduce((s,p)=>s+p.txns.length,0);
   let beforeCount=0;
-  mutateListDoc('customers',current=>{
+  crmBulkRewrite(current=>{
     beforeCount=current.reduce((s,c)=>s+((c.txns||[]).length),0);
     const map={};
     current.forEach(c=>map[c.phone]=Object.assign({},c,{txns:(c.txns||[]).slice()}));
@@ -3935,7 +4036,7 @@ function importUpdate(rows){
     parsed[phone].txns.push(txn);
   });
   let updated=0,added=0;
-  mutateListDoc('customers',current=>{
+  crmBulkRewrite(current=>{
     const map={};current.forEach(c=>map[c.phone]=Object.assign({},c,{txns:(c.txns||[]).slice()}));
     Object.values(parsed).forEach(p=>{
       let cu=map[p.phone];
@@ -4487,7 +4588,7 @@ function crmDeleteTxn(phone,inv){
   const c=CUSTOMERS.find(x=>x.phone===phone);if(!c)return;
   const t=(c.txns||[]).find(x=>x.inv===inv);if(!t)return;
   if(!confirm(LX('حذف باقة «','Delete package “')+(t.item||t.cat||'')+LX('»؟ سيُعاد احتساب جديد/تجديد للعميل تلقائياً.','”? New/renewal for this customer will be recomputed automatically.')))return;
-  mutateListDoc('customers',cur=>cur.map(x=>x.phone!==phone?x:Object.assign({},x,{txns:(x.txns||[]).filter(tt=>tt.inv!==inv)}))).then(n=>{CUSTOMERS=n;toast('🗑 '+LX('حُذفت الباقة','Package deleted'));try{logHistory(LX('حذف باقة','Delete package'),phone+' / '+inv,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  crmWriteCustomer(phone,c=>Object.assign({},c,{txns:(c.txns||[]).filter(tt=>tt.inv!==inv)})).then(()=>{toast('🗑 '+LX('حُذفت الباقة','Package deleted'));try{logHistory(LX('حذف باقة','Delete package'),phone+' / '+inv,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmEditProvider(phone,inv){
   if(!can('edit_customers')){toast(LX('لا صلاحية','No permission'));return;}
@@ -4503,13 +4604,13 @@ function crmEditProvider(phone,inv){
 function crmEditProviderSave(phone,inv){
   if(!can('edit_customers')){toast(LX('لا صلاحية','No permission'));return;}
   const v=(document.getElementById('prov-name').value||'').trim();
-  mutateListDoc('customers',cur=>cur.map(c=>c.phone!==phone?c:Object.assign({},c,{txns:(c.txns||[]).map(t=>t.inv!==inv?t:Object.assign({},t,{trainer:v}))}))).then(n=>{CUSTOMERS=n;closeModal();toast('💾 '+LX('تم','Saved'));try{logHistory(LX('تعديل مقدم الخدمة','Edit provider'),phone+' / '+inv+' → '+v,'edit');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  crmWriteCustomer(phone,c=>Object.assign({},c,{txns:(c.txns||[]).map(t=>t.inv!==inv?t:Object.assign({},t,{trainer:v}))})).then(()=>{closeModal();toast('💾 '+LX('تم','Saved'));try{logHistory(LX('تعديل مقدم الخدمة','Edit provider'),phone+' / '+inv+' → '+v,'edit');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmDeleteCustomer(phone){
   if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Manager only'));return;}
   const c=CUSTOMERS.find(x=>x.phone===phone);if(!c)return;
   if(!confirm(LX('حذف العميل ','Delete customer ')+(c.name||phone)+LX(' وكل بياناته نهائياً؟','and all their data?')))return;
-  mutateListDoc('customers',cur=>cur.filter(x=>x.phone!==phone)).then(n=>{CUSTOMERS=n;toast('🗑 '+LX('حُذف العميل','Customer deleted'));try{logHistory(LX('حذف عميل','Delete customer'),phone,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  crmWriteCustomer(phone,()=>null).then(()=>{toast('🗑 '+LX('حُذف العميل','Customer deleted'));try{logHistory(LX('حذف عميل','Delete customer'),phone,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmEditCustomerZone(phone){
   if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Manager only'));return;}
@@ -4531,7 +4632,7 @@ function crmEditCustomerZoneSave(phone){
   const city=document.getElementById('cz-city').value||null;
   const zv=document.getElementById('cz-zone').value;const zoneId=zv===''?null:(parseInt(zv,10));
   const ct=(CITIES||[]).find(x=>x.id===city);
-  mutateListDoc('customers',cur=>cur.map(x=>x.phone!==phone?x:Object.assign({},x,{city,cityName:ct?(lang==='ar'?ct.ar:ct.en):'',zoneId}))).then(n=>{CUSTOMERS=n;closeModal();toast('💾 '+LX('تم','Saved'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  crmWriteCustomer(phone,c=>Object.assign({},c,{city,cityName:ct?(lang==='ar'?ct.ar:ct.en):'',zoneId})).then(()=>{closeModal();toast('💾 '+LX('تم','Saved'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmNormStatus(s){const st=CRM_CFG.complaintStatuses||['مفتوح','قيد المعالجة','محلول'];const map={open:0,in_progress:1,resolved:2};if(s in map)return st[Math.min(map[s],st.length-1)]||st[0];return s||st[0];}
 function crmStatusPill(s){const st=CRM_CFG.complaintStatuses||['مفتوح','قيد المعالجة','محلول'];const v=crmNormStatus(s);const i=st.indexOf(v);const cls=i>=st.length-1?'pill-green':(i<=0?'pill-red':'pill-amber');return `<span class="crm-pill ${cls}">${esc(v)}</span>`;}
@@ -4912,14 +5013,11 @@ function crmEditSubSave(phone,inv){
   const start=g('es-start'),end=g('es-end'),reason=g('es-reason');
   if(!reason){toast(LX('اكتب سبب التعديل','Enter edit reason'));return;}
   const entry={by:currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'',at:new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'}),reason,start,end};
-  mutateListDoc('customers',cur=>cur.map(c=>{
-    if(c.phone!==phone)return c;
-    return Object.assign({},c,{txns:(c.txns||[]).map(t=>{
-      if(t.inv!==inv)return t;
-      const log=(t.editLog||[]).concat(entry);
-      return Object.assign({},t,{startOverride:start||t.startOverride||'',endOverride:end||t.endOverride||'',editLog:log});
-    })});
-  })).then(n=>{CUSTOMERS=n;closeModal();toast(LX('💾 تم تعديل الاشتراك','💾 Subscription updated'));try{logHistory(LX('تعديل اشتراك','Edit subscription'),`${phone} · ${reason}`,'edit');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل: ','❌ Failed: ')+e.message);});
+  crmWriteCustomer(phone,c=>Object.assign({},c,{txns:(c.txns||[]).map(t=>{
+    if(t.inv!==inv)return t;
+    const log=(t.editLog||[]).concat(entry);
+    return Object.assign({},t,{startOverride:start||t.startOverride||'',endOverride:end||t.endOverride||'',editLog:log});
+  })})).then(()=>{closeModal();toast(LX('💾 تم تعديل الاشتراك','💾 Subscription updated'));try{logHistory(LX('تعديل اشتراك','Edit subscription'),`${phone} · ${reason}`,'edit');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل: ','❌ Failed: ')+e.message);});
 }
 
 // ---------- استرجاع اشتراك (refund) ----------
@@ -4941,10 +5039,7 @@ function crmRefundSave(phone,inv,refunded){
   if(refunded&&!amount){toast(LX('اكتب المبلغ المُسترجع','Enter refund amount'));return;}
   const at=new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'});
   const by=currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'';
-  mutateListDoc('customers',cur=>cur.map(c=>{
-    if(c.phone!==phone)return c;
-    return Object.assign({},c,{txns:(c.txns||[]).map(t=>t.inv!==inv?t:Object.assign({},t,{refunded:!!refunded,refundAmount:amount,refundNote:note,refundAt:refunded?at:'',refundBy:refunded?by:''}))});
-  })).then(n=>{CUSTOMERS=n;closeModal();toast(refunded?LX(`↩️ سُجّل استرجاع ${crmMoney(amount)} ريال`,`↩️ Refund of ${crmMoney(amount)} SAR recorded`):LX('أُلغي الاسترجاع','Refund undone'));try{logHistory(LX('استرجاع اشتراك','Refund'),`${phone} · ${refunded?crmMoney(amount)+' '+LX('ريال','SAR'):LX('إلغاء','undo')}`,'edit');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل: ','❌ Failed: ')+e.message);});
+  crmWriteCustomer(phone,c=>Object.assign({},c,{txns:(c.txns||[]).map(t=>t.inv!==inv?t:Object.assign({},t,{refunded:!!refunded,refundAmount:amount,refundNote:note,refundAt:refunded?at:'',refundBy:refunded?by:''}))})).then(()=>{closeModal();toast(refunded?LX(`↩️ سُجّل استرجاع ${crmMoney(amount)} ريال`,`↩️ Refund of ${crmMoney(amount)} SAR recorded`):LX('أُلغي الاسترجاع','Refund undone'));try{logHistory(LX('استرجاع اشتراك','Refund'),`${phone} · ${refunded?crmMoney(amount)+' '+LX('ريال','SAR'):LX('إلغاء','undo')}`,'edit');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل: ','❌ Failed: ')+e.message);});
 }
 // ---------- متابعة تجديد الاشتراكات المنتهية ----------
 function crmRenewFollowForm(phone,inv){
@@ -4967,10 +5062,7 @@ function crmRenewFollowSave(phone,inv){
   const note=g('rf-note'),reason=g('rf-reason'),by=g('rf-by'),nextDate=g('rf-date');
   if(!note&&!reason&&!nextDate){toast(LX('اكتب ملاحظة أو سبب','Enter a note or reason'));return;}
   const entry={at:new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'}),by,note,reason,nextDate};
-  mutateListDoc('customers',cur=>cur.map(c=>{
-    if(c.phone!==phone)return c;
-    return Object.assign({},c,{txns:(c.txns||[]).map(t=>t.inv!==inv?t:Object.assign({},t,{renewLog:(t.renewLog||[]).concat(entry),renewReason:reason||t.renewReason||'',renewNote:note}))});
-  })).then(n=>{CUSTOMERS=n;closeModal();toast(LX('💾 تمت إضافة المتابعة','💾 Follow-up added'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  crmWriteCustomer(phone,c=>Object.assign({},c,{txns:(c.txns||[]).map(t=>t.inv!==inv?t:Object.assign({},t,{renewLog:(t.renewLog||[]).concat(entry),renewReason:reason||t.renewReason||'',renewNote:note}))})).then(()=>{closeModal();toast(LX('💾 تمت إضافة المتابعة','💾 Follow-up added'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 // ---------- قائمة الانتظار (تحت خدمة العملاء) ----------
 function crmWaitlist(){
@@ -5354,8 +5446,24 @@ function crmSettings(){
       <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('أضف مستخدمين وحدّد صلاحيات كل واحد بدقة — صلاحيات الزون والـ CRM من نفس المكان','Add users and set each one’s permissions precisely — both Zone and CRM permissions from one place')}</div>
       <div id="usersListEl"></div><div id="adminUsersBtns"></div></div>`:'';
   return `<h3 style="margin:0 0 12px;font-size:16px">⚙️ ${LX('إعدادات الـ CRM','CRM Settings')}</h3>
-    ${users}${cfg}
+    ${users}${cfg}${crmPerfCard()}
     ${can('manage_complaints')?crmUploadLog()+crmDangerZone():''}`;
+}
+function crmPerfCard(){
+  if(!isSuperAdmin())return '';
+  const status=_custSharded
+    ? `<span class="crm-pill pill-green">${LX('مُفعّل — البيانات مقسّمة على '+CUST_SHARDS+' شرائح','Active — split across '+CUST_SHARDS+' shards')}</span>`
+    : `<span class="crm-pill pill-amber">${LX('غير مُفعّل — البيانات في مستند واحد','Not active — single doc')}</span>`;
+  return `<div class="crm-card" style="border:1px solid #BFDBFE;background:#EFF6FF">
+    <h3 style="color:#1E40AF">⚡ ${LX('تسريع حفظ العملاء (تقسيم البيانات)','Speed up customer saving (sharding)')}</h3>
+    <div style="font-size:11px;color:var(--g600);margin-bottom:8px">${LX('يقسّم بيانات العملاء على عدة مستندات فيصير كل حفظ يكتب جزءاً صغيراً فقط بدل الملف كامل — أسرع بكثير ويرفع سقف الحجم.','Splits customer data across several docs so each save rewrites only a small part instead of the whole file — much faster and raises the size ceiling.')}</div>
+    <div style="margin-bottom:10px">${LX('الحالة','Status')}: ${status}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" style="font-size:12px;color:var(--blue);border-color:#BFDBFE" onclick="crmExportCustomersBackup()">⬇️ ${LX('١) نزّل نسخة احتياطية','1) Download backup')}</button>
+      ${_custSharded?'':`<button class="btn btn-primary" style="font-size:12px" onclick="crmMigrateToShards()">⚡ ${LX('٢) فعّل التقسيم','2) Enable sharding')}</button>`}
+    </div>
+    <div style="font-size:11px;color:#B91C1C;margin-top:8px">${LX('انزل النسخة الاحتياطية أولاً. المستند القديم يبقى محفوظاً ولا يُحذف.','Download the backup first. The old doc is kept and never deleted.')}</div>
+  </div>`;
 }
 function crmUploadLog(){
   const arr=(CRM_UPLOADS||[]).slice().sort((a,b)=>b.id-a.id).slice(0,50);
@@ -5373,7 +5481,7 @@ function crmUndoUpload(batch,page,logId){
   if(!confirm(LX('تراجع عن هذا الرفع؟ سيُحذف فقط ما أضافه هذا الملف، ولن يتأثر الباقي.','Undo this upload? Only what this file added will be removed; the rest is untouched.')))return;
   let job;
   if(page==='sales'){
-    job=mutateListDoc('customers',cur=>cur.map(c=>Object.assign({},c,{txns:(c.txns||[]).filter(t=>t._batch!==batch)})).filter(c=>(c.txns||[]).length)).then(n=>{CUSTOMERS=n;});
+    job=crmBulkRewrite(cur=>cur.map(c=>Object.assign({},c,{txns:(c.txns||[]).filter(t=>t._batch!==batch)})).filter(c=>(c.txns||[]).length)).then(n=>{CUSTOMERS=n;});
   }else if(page==='free'){
     job=mutateListDoc('free_sessions',cur=>cur.filter(f=>f._batch!==batch)).then(n=>{FREE_SESSIONS=n;});
   }else if(page==='leads'){
@@ -5401,7 +5509,7 @@ function crmClearData(which){
   if(!confirm(LX('⚠️ تأكيد حذف ','⚠️ Confirm delete ')+names[which]+LX(' نهائياً؟','? Permanent.')))return;
   if(!confirm(LX('تأكيد أخير — لا رجعة. متابعة؟','Final confirmation — no undo. Proceed?')))return;
   const jobs=[];
-  if(which==='customers'||which==='all')jobs.push(db.collection('app').doc('customers').set({list:[]}).then(()=>{CUSTOMERS=[];}));
+  if(which==='customers'||which==='all')jobs.push(crmClearCustomersStore());
   if(which==='free'||which==='all')jobs.push(db.collection('app').doc('free_sessions').set({list:[]}).then(()=>{FREE_SESSIONS=[];}));
   if(which==='service'||which==='all')jobs.push(db.collection('app').doc('crm_service').set({map:{complaints:[],suggestions:[],desk:[],followups:[]}}).then(()=>{CRM_SVC={complaints:[],suggestions:[],desk:[],followups:[]};}));
   if(which==='leads'||which==='all')jobs.push(db.collection('app').doc('crm_leads').set({list:[]}).then(()=>{LEADS=[];}));
