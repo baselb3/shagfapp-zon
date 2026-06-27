@@ -3821,7 +3821,7 @@ function crmTxnDate(t){const s=t.pdate||t.invoiceDate||t.expiry||'';const day=St
 // it must not count for the customer nor as their "new".
 function crmIsTrial(t){return /trial/i.test(t.item||t.cat||'')||/تجربة/.test(t.item||'');}
 // باقات إضافية تُعطى مع الاشتراك (مثل Minute Nutrition) — لا تُحتسب اشتراكاً ولا جديد/تجديد
-function crmIsAddon(t){const s=String(t.item||t.cat||'').toLowerCase();return (CRM_CFG.addonPackages||[]).some(a=>{a=String(a||'').trim().toLowerCase();return a&&s.indexOf(a)>=0;});}
+function crmIsAddon(t){const s=String(t.item||t.cat||'').trim().toLowerCase();return (CRM_CFG.addonPackages||[]).some(a=>{a=String(a||'').trim().toLowerCase();return a&&s===a;});}
 function crmRealTxns(c){if(c._realCache)return c._realCache;return (c.txns||[]).filter(t=>!crmIsTrial(t)&&!crmIsAddon(t));}
 function crmHasReal(c){return crmRealTxns(c).length>0;}
 // Precompute the per-customer derived values (real txns, latest sub, days-left)
@@ -5477,7 +5477,7 @@ function crmSettings(){
     ${block('complaintPriorities',LX('أولويات الشكوى','Complaint priorities'),'')}
     ${block('responsibles',LX('المسؤولون عن الشكاوى','Complaint responsibles'),LX('تظهر في خانة «محوّلة إلى» داخل الشكوى','Shown in the “Assigned to” field'))}
     ${block('leadStatuses',LX('حالات العملاء الجدد (Leads)','Lead statuses'),LX('قائمة اختيار الحالة في متابعة العملاء الجدد','Status options in lead follow-up'))}
-    ${block('addonPackages',LX('باقات لا تُحتسب اشتراكاً (تُعطى مع الاشتراك)','Add-on packages (not counted as a subscription)'),LX('مثل Minute Nutrition — لا تُحسب جديد ولا تجديد ولا اشتراك نشط. أي باقة يحتوي اسمها على هذه الكلمات تُستبعد من حسابات المبيعات.','e.g. Minute Nutrition — not counted as new/renewal or an active subscription. Any package whose name contains these words is excluded from sales counts.'))}`:'';
+    ${block('addonPackages',LX('باقات لا تُحتسب اشتراكاً (تُعطى مع الاشتراك)','Add-on packages (not counted as a subscription)'),LX('مثل Minute Nutrition — لا تُحسب جديد ولا تجديد ولا اشتراك نشط. تُستبعد الباقة التي يطابق اسمها الاسم المُدخل بالضبط (انسخ الاسم كما هو في ملف المبيعات).','e.g. Minute Nutrition — not counted as new/renewal or an active subscription. Only a package whose name exactly matches the entered name is excluded (copy the name exactly as it appears in the sales file).'))}`:'';
   const users=can('manage_users')?`<div class="crm-card"><h3>👥 ${LX('إدارة المستخدمين والصلاحيات','Users & permissions')}</h3>
       <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('أضف مستخدمين وحدّد صلاحيات كل واحد بدقة — صلاحيات الزون والـ CRM من نفس المكان','Add users and set each one’s permissions precisely — both Zone and CRM permissions from one place')}</div>
       <div id="usersListEl"></div><div id="adminUsersBtns"></div></div>`:'';
