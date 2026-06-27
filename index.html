@@ -4319,9 +4319,8 @@ function crmWlBar(ctx){
   const RF=[['all',LX('الكل','All')],['today',LX('اليوم','Today')],['-1',LX('أمس','Yesterday')],['-3',LX('قبل ٣ أيام','3 days ago')]];
   const s=crmWlState(ctx);const isDate=s.ref==='date'&&s.date;const hasRange=!!(s.from||s.to);
   const btns=RF.map(b=>`<button class="crm-subbtn ${(!isDate&&!hasRange&&s.ref===b[0])?'on':''}" onclick="crmSetWlRef('${ctx}','${b[0]}')">${b[1]}</button>`).join('');
-  const dbox=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:6px">📅 ${LX('يوم','Day')}:</span><input type="date" value="${esc(s.date||'')}" onchange="crmSetWlDate('${ctx}',this.value)" style="font-size:11px;padding:3px 6px;border:1px solid var(--g300);border-radius:6px${isDate?';outline:2px solid var(--primary)':''}"/>`;
-  const range=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:8px">${LX('من','From')}</span><input type="date" value="${esc(s.from||'')}" onchange="crmSetWlRange('${ctx}',this.value,null)" style="font-size:11px;padding:3px 6px;border:1px solid ${hasRange?'var(--primary)':'var(--g300)'};border-radius:6px"/><span style="font-size:11px;color:var(--g600)">${LX('إلى','To')}</span><input type="date" value="${esc(s.to||'')}" onchange="crmSetWlRange('${ctx}',null,this.value)" style="font-size:11px;padding:3px 6px;border:1px solid ${hasRange?'var(--primary)':'var(--g300)'};border-radius:6px"/>${hasRange?`<button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmSetWlRange('${ctx}','','')">✕</button>`:''}`;
-  return `<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:14px">🗓 ${btns}${dbox}${range}</div>`;
+  const range=`<span style="font-size:11px;color:var(--g600);margin-${lang==='ar'?'right':'left'}:8px">${LX('من','From')}</span><input type="date" value="${esc(s.from||'')}" onchange="crmSetWlRange('${ctx}',this.value,null)" style="width:auto;font-size:11px;padding:3px 6px;border:1px solid ${hasRange?'var(--primary)':'var(--g300)'};border-radius:6px"/><span style="font-size:11px;color:var(--g600)">${LX('إلى','To')}</span><input type="date" value="${esc(s.to||'')}" onchange="crmSetWlRange('${ctx}',null,this.value)" style="width:auto;font-size:11px;padding:3px 6px;border:1px solid ${hasRange?'var(--primary)':'var(--g300)'};border-radius:6px"/>${hasRange?`<button class="btn" style="font-size:10px;padding:2px 7px" onclick="crmSetWlRange('${ctx}','','')">✕</button>`:''}`;
+  return `<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:14px">🗓 ${btns}${range}</div>`;
 }
 function crmRenewBacklog(ctx){
   const out=[];const today=new Date();today.setHours(23,59,59,0);
@@ -4347,23 +4346,42 @@ function crmWorkLists(ctx){
   const noSubCard=`<div class="crm-card" style="background:var(--g50)"><h3 style="margin:0 0 8px">🎟 ${LX('أخذوا فري سشن وما اشتركوا','Took a free session, no subscription')} <span class="crm-pill pill-amber">${noSub.length}</span></h3><div style="max-height:540px;overflow:auto">${noSub.length?noSub.slice(0,200).map(crmFreeRow).join(''):`<div class="crm-empty">${LX('لا يوجد','None')}</div>`}</div></div>`;
   return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px">${renewCard}${noSubCard}</div>`;
 }
-function crmPctBars(title,ic,map,accent){
-  const total=Object.values(map).reduce((s,n)=>s+n,0);
-  const items=Object.entries(map).sort((a,b)=>b[1]-a[1]);
-  const body=total?items.map(([k,n])=>{const pct=Math.round(n/total*100);return `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span>${esc(k)}</span><span style="font-weight:700">${pct}% <span style="color:var(--g400);font-weight:400">(${n})</span></span></div><div style="height:8px;background:var(--g100);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${accent}"></div></div></div>`;}).join(''):`<div class="crm-empty">${LX('لا بيانات بعد — تُجمع من ملاحظات المتابعة','No data yet — collected from follow-up notes')}</div>`;
+function crmPctBars(title,ic,entries,accent,kind){
+  const total=entries.reduce((s,e)=>s+e[1].length,0);
+  const drill=crmState.reasonDrill;
+  const body=total?entries.map(([k,arr],i)=>{const n=arr.length;const pct=Math.round(n/total*100);const on=drill&&drill.kind===kind&&drill.reason===k;return `<div style="margin-bottom:8px${on?';outline:2px solid '+accent+';outline-offset:3px;border-radius:4px':''}"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span>${esc(k)}</span><span style="font-weight:700">${pct}% <a onclick="crmReasonDrill('${kind}',${i})" title="${LX('اعرض العملاء','Show customers')}" style="cursor:pointer;color:${accent};text-decoration:underline">(${n})</a></span></div><div style="height:8px;background:var(--g100);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${accent}"></div></div></div>`;}).join(''):`<div class="crm-empty">${LX('لا بيانات بعد — تُجمع من ملاحظات المتابعة','No data yet — collected from follow-up notes')}</div>`;
   return `<div class="crm-card"><h3 style="margin:0 0 8px">${ic} ${title} ${total?`<span class="crm-pill pill-gray">${total}</span>`:''}</h3>${body}</div>`;
 }
 function crmReasonsRow(){
-  const noSub={};FREE_SESSIONS.forEach(f=>{if(f.status==='cancelled'||crmIsConverted(f)||!crmProvAllowed(f.trainer))return;const r=String(f.notSubReason||'').trim();if(r)noSub[r]=(noSub[r]||0)+1;});
-  const noRenew={};CUSTOMERS.forEach(c=>{if(!crmCustAllowed(c))return;(c.txns||[]).forEach(t=>{const r=String(t.renewReason||'').trim();if(r)noRenew[r]=(noRenew[r]||0)+1;});});
-  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:14px">${crmPctBars(LX('أسباب عدم الاشتراك','No-subscription reasons'),'🚫',noSub,'#D97706')}${crmPctBars(LX('أسباب عدم التجديد','No-renewal reasons'),'🔄',noRenew,'#DC2626')}</div>`;
+  const noSub={};FREE_SESSIONS.forEach(f=>{if(f.status==='cancelled'||crmIsConverted(f)||!crmProvAllowed(f.trainer))return;if(!crmWlMatch('my',f.scheduledDate))return;const r=String(f.notSubReason||'').trim();if(!r)return;(noSub[r]=noSub[r]||[]).push(f);});
+  const noRenew={};CUSTOMERS.forEach(c=>{if(!crmCustAllowed(c))return;(c.txns||[]).forEach(t=>{const r=String(t.renewReason||'').trim();if(!r)return;if(!crmWlMatch('my',crmEnd(t)))return;(noRenew[r]=noRenew[r]||[]).push({c,t});});});
+  const eSub=Object.entries(noSub).sort((a,b)=>b[1].length-a[1].length);
+  const eRen=Object.entries(noRenew).sort((a,b)=>b[1].length-a[1].length);
+  crmState._rd={noSub:eSub,noRenew:eRen};
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:14px">${crmPctBars(LX('أسباب عدم الاشتراك','No-subscription reasons'),'🚫',eSub,'#D97706','noSub')}${crmPctBars(LX('أسباب عدم التجديد','No-renewal reasons'),'🔄',eRen,'#DC2626','noRenew')}</div>${crmReasonDrillPanel()}`;
+}
+function crmReasonDrill(kind,i){
+  const rd=crmState._rd&&crmState._rd[kind];if(!rd||!rd[i])return;
+  const reason=rd[i][0];const cur=crmState.reasonDrill;
+  crmState.reasonDrill=(cur&&cur.kind===kind&&cur.reason===reason)?null:{kind,reason};
+  crmRender();
+}
+function crmReasonDrillPanel(){
+  const d=crmState.reasonDrill;if(!d)return'';
+  const rd=crmState._rd&&crmState._rd[d.kind];if(!rd)return'';
+  const ent=rd.find(e=>e[0]===d.reason);if(!ent)return'';
+  const items=ent[1];let rows='';
+  if(d.kind==='noSub')rows=items.map(crmFreeRow).join('');
+  else{const today=new Date();today.setHours(23,59,59,0);rows=items.map(o=>{const dl=Math.round((new Date(String(crmEnd(o.t)).slice(0,10)+'T00:00:00')-today)/86400000);return crmRenewRow({t:o.t,c:o.c,dl});}).join('');}
+  return `<div class="crm-card" style="margin-bottom:14px;border:1px solid var(--primary)"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h3 style="margin:0;font-size:14px">${d.kind==='noSub'?'🚫':'🔄'} ${esc(d.reason)} <span class="crm-pill pill-gray">${items.length}</span></h3><button class="btn" style="font-size:11px;padding:2px 8px" onclick="crmState.reasonDrill=null;crmRender()">✕ ${LX('إغلاق','Close')}</button></div><div style="max-height:400px;overflow:auto">${rows}</div></div>`;
 }
 function crmMyDash(){
   const greet=currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'';
   return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px"><h3 style="margin:0;font-size:16px">📋 ${LX('لوحتي','My board')}${greet?` · ${esc(greet)}`:''}</h3></div>
    <div style="font-size:11px;color:var(--g400);margin-bottom:10px">${LX('اللي يحتاج تجديد واللي أخذ فري سشن وما اشترك — تابِع واكتب النوت من هنا. «الكل» يعرض القائمة كاملة.','Renewals due and free-session no-subs — follow up and note here. “All” shows the full list.')}</div>
+   ${crmWlBar('my')}
    ${crmReasonsRow()}
-   ${crmWlBar('my')}${crmWorkLists('my')}`;
+   ${crmWorkLists('my')}`;
 }
 
 function crmDashCustomize(){
