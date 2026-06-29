@@ -3720,6 +3720,11 @@ buildEmojiMap();
 buildPriceSessionsOptions();
 setLang(lang);
 
+// Public coach-evaluation link (?feedback=1): show a no-login form INSTEAD of the
+// app. The coach enters the customer's mobile + answers the admin-defined questions;
+// it's stored in app/crm_feedback (keyed by phone) and surfaces in the CRM cards.
+if(new URLSearchParams(location.search).get('feedback')){window._FB_MODE=true;fbBoot();}
+
 // Auto-login on page load if the user has a fresh session (< 24h since last
 // successful login). Refreshing the page should NOT log them out within that
 // window. If the local session flag is missing or expired, we do NOT call
@@ -3728,6 +3733,7 @@ setLang(lang);
 // await, before doLogin has a chance to setLoginTime). Instead we just return
 // silently and let the login screen handle re-authentication.
 auth.onAuthStateChanged(async (fbUser)=>{
+  if(window._FB_MODE) return;              // public feedback page — never boot the app
   if(!fbUser || currentUser) return;       // not signed in, or we already handled login
   if(!isSessionFresh()) return;            // no fresh session → let login screen show
   const email=fbUser.email||'';
@@ -3774,6 +3780,7 @@ let CRM_UPLOADS=[];  // upload audit log: [{id,page,by,at,total,added,dupe,skipp
 let CRM_NOTIFS={};   // { username: [ {id,text,from,at,read,sec,sub} ] }
 let CRM_DASH={};     // { username: { widgets:[key,...] } } — each employee's chosen dashboard widgets
 let CRM_TODOS=[];    // kanban tasks: [{id,title,desc,type,priority,status,assignees:[u],createdBy,...}]
+let CRM_FEEDBACK=[]; // coach free-session evaluations: [{id,ts,phone,phoneNorm,at,answers:[{q,type,val}],_src}]
 let CRM_SVC={complaints:[],suggestions:[],desk:[],followups:[]};
 let CRM_CFG={
   noRenewReasons:['السعر','غيّر النادي','ظروف صحية','انتقل لمدينة أخرى','غير راضٍ عن الخدمة','تعذّر التواصل'],
@@ -3782,7 +3789,13 @@ let CRM_CFG={
   complaintPriorities:['عادية','عالية','عاجلة'],
   responsibles:[],
   leadStatuses:['لا رد','تم الحجز','سيتم الحجز قريباً','الوقت غير مناسب','خارج مناطق التغطية','السعر مرتفع','غير مهتم'],
-  addonPackages:['Minute Nutrition'] // باقات تُعطى مع الاشتراك ولا تُحتسب اشتراكاً/جديد/تجديد
+  addonPackages:['Minute Nutrition'], // باقات تُعطى مع الاشتراك ولا تُحتسب اشتراكاً/جديد/تجديد
+  feedbackQuestions:[ // تقييم المدربة بعد الحصة المجانية (قابلة للتعديل من الإعدادات)
+    {q:'كيف كان تفاعل العميلة في الحصة؟',type:'stars',options:[]},
+    {q:'مستوى لياقة العميلة',type:'stars',options:[]},
+    {q:'ما احتمال اشتراك العميلة؟',type:'choice',options:['عالٍ','متوسط','ضعيف']},
+    {q:'ملاحظاتك عن الحصة والعميلة',type:'text',options:[]}
+  ]
 };
 let crmState={mode:'zone',sec:null,sub:null,period:'month',drill:null,year:'',from:'',to:'',expF:'all',expDate:'',followSearch:'',freeDate:'',freeStatus:'',freeSearch:'',freeDup:false,salesSort:'newest',followFreeF:'',followFreeDate:'',salesSearch:'',salesPeriod:'all',leadFilter:'',leadSearch:'',myDashPeriod:'month',myDashDrill:'',myDashDate:'',mdRef:'today',mdDate:'',todoView:'mine',todoPerson:'',ndPeriod:'month',ndFrom:'',ndTo:''};
 let _todoDrag=null;
@@ -3921,6 +3934,10 @@ async function loadCrmData(){
     const td=await db.collection('app').doc('crm_todos').get();
     CRM_TODOS=td.exists?(td.data().list||[]):[];
   }catch(e){console.error('load crm_todos',e);}
+  try{
+    const fb=await db.collection('app').doc('crm_feedback').get();
+    CRM_FEEDBACK=fb.exists?(fb.data().list||[]):[];
+  }catch(e){console.error('load crm_feedback',e);}
 }
 // record an upload event to the audit log
 function crmLogUpload(page,info){
@@ -4617,7 +4634,7 @@ function crmCustomerCard(c){
   const totalLine=`${LX('إجمالي','Total')} ${crmMoney(paid)}`+(refundTotal?` · <span style="color:#B91C1C">${LX('مُسترجع','Refunded')} ${crmMoney(refundTotal)}</span> · ${LX('صافي','Net')} ${crmMoney(paid-refundTotal)}`:'');
   const mgr=(typeof isSuperAdmin==='function'&&isSuperAdmin());
   const mgrBtns=mgr?`<div style="display:flex;gap:4px;flex-shrink:0"><button class="btn" style="font-size:11px;padding:2px 7px" onclick="crmEditCustomerZone('${esc(c.phone)}')" title="${LX('تعيين المدينة/الزون','Set city/zone')}">📍</button><button class="btn btn-danger" style="font-size:11px;padding:2px 7px" onclick="crmDeleteCustomer('${esc(c.phone)}')" title="${LX('حذف العميل نهائياً','Delete customer')}">✕</button></div>`:'';
-  return `<div class="crm-card"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><div><span style="font-weight:800">${esc(c.name||'—')}</span> <span dir=ltr style="color:var(--g600);font-size:12px">${esc(c.phone)}</span><div style="font-size:11px;color:var(--g400);margin-top:2px">${cityLabel(c.city)}${c.zoneId!=null?' · '+LX('زون','Zone')+' '+c.zoneId:''} · <b style="color:var(--primary)">${real.length} ${LX('باقة','pkgs')}</b> · <b style="color:var(--primary)">${totalSess} ${LX('حصة','sess')}</b> (${usedSess} ${LX('مستخدمة','used')}) · ${totalLine}</div></div>${mgrBtns}</div><div style="display:flex;flex-direction:column;gap:6px">${pkgs}</div></div>`;
+  return `<div class="crm-card"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><div><span style="font-weight:800">${esc(c.name||'—')}</span> <span dir=ltr style="color:var(--g600);font-size:12px">${esc(c.phone)}</span><div style="font-size:11px;color:var(--g400);margin-top:2px">${cityLabel(c.city)}${c.zoneId!=null?' · '+LX('زون','Zone')+' '+c.zoneId:''} · <b style="color:var(--primary)">${real.length} ${LX('باقة','pkgs')}</b> · <b style="color:var(--primary)">${totalSess} ${LX('حصة','sess')}</b> (${usedSess} ${LX('مستخدمة','used')}) · ${totalLine}</div></div>${mgrBtns}</div><div style="display:flex;flex-direction:column;gap:6px">${pkgs}</div>${crmFeedbackInline(c.phone)}</div>`;
 }
 function crmDeleteTxn(phone,inv){
   if(!can('delete_customers')){toast(LX('لا صلاحية','No permission'));return;}
@@ -4986,7 +5003,9 @@ function crmFreeSessions(){
     const dupN=phoneCount[String(f.phone||'').trim()]||0;
     const dupBadge=dupN>1?` <span class="crm-pill pill-amber" title="${LX('نفس الجوال متكرر','same mobile repeated')}">×${dupN}</span>`:'';
     const delBtn=canDel?`<button class="btn btn-danger" style="font-size:10px;padding:2px 6px" onclick="crmDeleteFreeSession('${esc(f.sessionId)}')" title="${LX('حذف هذه الحصة نهائياً','Delete this session')}">🗑</button>`:'';
-    return `<tr style="${cancelledRow?'opacity:.7;background:#FEF2F2':(alert?'background:#FEF2F2':'')}"><td>${esc(f.name)}</td><td dir=ltr>${esc(f.phone)}${dupBadge}</td><td>${cityLabel(f.city)}${f.zoneId!=null?' · Z'+f.zoneId:''}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').replace(' at ',' '))}</td><td style="white-space:nowrap">${left}${alert}</td><td>${esc(f.trainer||'—')}</td><td>${booked}</td><td>${stPill}</td><td>${result}</td><td style="white-space:nowrap;display:flex;gap:4px;align-items:center">${ctrl}${delBtn}</td></tr>`;
+    const fbN=crmFeedbackFor(f.phone).length;
+    const fbBadge=fbN?` <span class="crm-pill pill-blue" style="cursor:pointer" onclick="crmShowFeedback('${esc(f.phone)}')" title="${LX('تقييم المدربة بعد الحصة','Coach evaluation')}">📝${fbN}</span>`:'';
+    return `<tr style="${cancelledRow?'opacity:.7;background:#FEF2F2':(alert?'background:#FEF2F2':'')}"><td>${esc(f.name)}${fbBadge}</td><td dir=ltr>${esc(f.phone)}${dupBadge}</td><td>${cityLabel(f.city)}${f.zoneId!=null?' · Z'+f.zoneId:''}</td><td style="white-space:nowrap">${esc(String(f.scheduledDate||'').replace(' at ',' '))}</td><td style="white-space:nowrap">${left}${alert}</td><td>${esc(f.trainer||'—')}</td><td>${booked}</td><td>${stPill}</td><td>${result}</td><td style="white-space:nowrap;display:flex;gap:4px;align-items:center">${ctrl}${delBtn}</td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 function crmSetFreeStatus(sid,status){
@@ -5482,7 +5501,7 @@ function crmSettings(){
       <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('أضف مستخدمين وحدّد صلاحيات كل واحد بدقة — صلاحيات الزون والـ CRM من نفس المكان','Add users and set each one’s permissions precisely — both Zone and CRM permissions from one place')}</div>
       <div id="usersListEl"></div><div id="adminUsersBtns"></div></div>`:'';
   return `<h3 style="margin:0 0 12px;font-size:16px">⚙️ ${LX('إعدادات الـ CRM','CRM Settings')}</h3>
-    ${users}${cfg}${crmPerfCard()}
+    ${users}${cfg}${crmFeedbackSettings()}${crmPerfCard()}
     ${can('manage_complaints')?crmUploadLog()+crmDangerZone():''}`;
 }
 function crmPerfCard(){
@@ -5555,6 +5574,122 @@ function crmClearData(which){
 function crmCfgAdd(key){const el=document.getElementById('cfg-'+key);if(!el)return;const v=el.value.trim();if(!v)return;crmSaveCfg(key,(CRM_CFG[key]||[]).concat(v));}
 function crmCfgRemove(key,i){const arr=(CRM_CFG[key]||[]).slice();arr.splice(i,1);crmSaveCfg(key,arr);}
 function crmSaveCfg(key,arr){CRM_CFG[key]=arr;mutateMapDoc('crm_config',m=>Object.assign({},m,{[key]:arr})).then(()=>crmRender()).catch(e=>{console.error(e);toast(LX('❌ فشل الحفظ','❌ Save failed'));});}
+
+// ===================== FREE-SESSION COACH EVALUATION =====================
+// A public (no-login) form reached via ?feedback=1. The coach types the
+// customer's mobile and answers admin-defined questions; the result is stored
+// in app/crm_feedback (keyed by phone) and shown on the CRM customer card and
+// the free-sessions page. Anonymous Firebase auth is used so writes pass the
+// "authed user" Firestore rule without a real account.
+// -------- the configurable questions editor (super-admin Settings) --------
+function crmFeedbackSettings(){
+  if(typeof isSuperAdmin!=='function'||!isSuperAdmin())return '';
+  if(!window._fbqDraft)window._fbqDraft=JSON.parse(JSON.stringify(CRM_CFG.feedbackQuestions||[]));
+  const link=location.origin+location.pathname+'?feedback=1';
+  return `<div class="crm-card" style="border:1px solid #C7D2FE;background:#EEF2FF">
+    <h3 style="color:#3730A3">📝 ${LX('تقييم الحصة المجانية (رابط المدربة)','Free-session evaluation (coach link)')}</h3>
+    <div style="font-size:11px;color:var(--g600);margin-bottom:8px">${LX('رابط عام بدون تسجيل دخول — أرسليه للمدربة بعد الحصة المجانية. تكتب جوال العميلة وتجاوب الأسئلة، ويظهر التقييم في بطاقة العميلة وصفحة الفري سشن (يُربط بالجوال).','Public no-login link — send it to the coach after the free session. She enters the customer mobile and answers; the evaluation shows on the customer card and the free-sessions page (matched by phone).')}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px"><input id="fbLink" readonly value="${esc(link)}" style="flex:1;min-width:200px;font-size:12px" onclick="this.select()"/><button class="btn" onclick="crmFbCopyLink()">📋 ${LX('نسخ','Copy')}</button><button class="btn" onclick="window.open(document.getElementById('fbLink').value,'_blank')">↗ ${LX('فتح','Open')}</button></div>
+    <div style="font-size:12px;font-weight:700;margin-bottom:6px">${LX('أسئلة التقييم','Evaluation questions')}</div>
+    <div id="fbqEditor">${crmFbEditorHtml()}</div>
+  </div>`;
+}
+function crmFbEditorHtml(){
+  const d=window._fbqDraft||[];
+  const types=[['stars',LX('نجوم (١-٥)','Stars (1-5)')],['choice',LX('اختيار','Choice')],['text',LX('نص حر','Free text')]];
+  const rows=d.map((q,i)=>{
+    const typeSel=types.map(t=>`<option value="${t[0]}" ${q.type===t[0]?'selected':''}>${t[1]}</option>`).join('');
+    const optsField=q.type==='choice'?`<input id="fbq-${i}-opts" placeholder="${LX('الخيارات مفصولة بفاصلة: عالٍ، متوسط، ضعيف','Options comma-separated')}" value="${esc((q.options||[]).join('، '))}" style="font-size:12px;margin-top:5px"/>`:'';
+    return `<div style="border:1px solid var(--g200);border-radius:6px;padding:8px 10px;margin-bottom:6px;background:#fff">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <input id="fbq-${i}-q" value="${esc(q.q||'')}" placeholder="${LX('نص السؤال','Question text')}" style="flex:1;min-width:160px;font-size:12px"/>
+        <select id="fbq-${i}-type" onchange="crmFbTypeChange(${i},this.value)" style="width:auto;font-size:12px">${typeSel}</select>
+        <button class="btn" style="font-size:11px;padding:2px 7px" onclick="crmFbMoveQ(${i},-1)" ${i===0?'disabled':''}>▲</button>
+        <button class="btn" style="font-size:11px;padding:2px 7px" onclick="crmFbMoveQ(${i},1)" ${i===d.length-1?'disabled':''}>▼</button>
+        <button class="btn btn-danger" style="font-size:11px;padding:2px 7px" onclick="crmFbDelQ(${i})">✕</button>
+      </div>${optsField}</div>`;
+  }).join('')||`<div style="font-size:12px;color:var(--g400);margin-bottom:6px">${LX('لا أسئلة بعد','No questions yet')}</div>`;
+  return rows+`<div style="display:flex;gap:6px;margin-top:8px"><button class="btn" onclick="crmFbAddQ()">➕ ${LX('إضافة سؤال','Add question')}</button><button class="btn btn-primary" onclick="crmFbSaveQuestions()">💾 ${LX('حفظ الأسئلة','Save questions')}</button></div>`;
+}
+function crmFbCollectDraft(){(window._fbqDraft||[]).forEach((q,i)=>{const qe=document.getElementById('fbq-'+i+'-q');if(qe)q.q=qe.value;const te=document.getElementById('fbq-'+i+'-type');if(te)q.type=te.value;const oe=document.getElementById('fbq-'+i+'-opts');if(oe)q.options=oe.value.split(/[،,]/).map(s=>s.trim()).filter(Boolean);});}
+function crmFbRerenderEditor(){const el=document.getElementById('fbqEditor');if(el)el.innerHTML=crmFbEditorHtml();}
+function crmFbAddQ(){crmFbCollectDraft();window._fbqDraft.push({q:'',type:'stars',options:[]});crmFbRerenderEditor();}
+function crmFbDelQ(i){crmFbCollectDraft();window._fbqDraft.splice(i,1);crmFbRerenderEditor();}
+function crmFbMoveQ(i,dir){crmFbCollectDraft();const d=window._fbqDraft,j=i+dir;if(j<0||j>=d.length)return;const t=d[i];d[i]=d[j];d[j]=t;crmFbRerenderEditor();}
+function crmFbTypeChange(i,v){crmFbCollectDraft();window._fbqDraft[i].type=v;crmFbRerenderEditor();}
+function crmFbSaveQuestions(){crmFbCollectDraft();const clean=window._fbqDraft.filter(q=>String(q.q||'').trim()).map(q=>({q:q.q.trim(),type:q.type||'stars',options:q.type==='choice'?(q.options||[]):[]}));window._fbqDraft=JSON.parse(JSON.stringify(clean));crmSaveCfg('feedbackQuestions',clean);toast('💾 '+LX('حُفظت الأسئلة','Questions saved'));}
+function crmFbCopyLink(){const el=document.getElementById('fbLink');if(!el)return;el.select();try{navigator.clipboard.writeText(el.value);}catch(_){try{document.execCommand('copy');}catch(__){}}toast('📋 '+LX('نُسخ الرابط','Link copied'));}
+// -------- display the stored evaluations inside the CRM cards --------
+function crmFeedbackFor(phone){const np=crmNormPhone(phone);if(!np)return [];return (CRM_FEEDBACK||[]).filter(f=>crmNormPhone(f.phone)===np).sort((a,b)=>(b.ts||0)-(a.ts||0));}
+function crmFbAnsHtml(ans){return (ans||[]).map(a=>{let v;if(a.type==='stars'){const n=Math.max(0,Math.min(5,Math.round(+a.val||0)));v='⭐'.repeat(n)+`<span style="color:var(--g300)">${'☆'.repeat(5-n)}</span> <span style="color:var(--g500)">(${n}/5)</span>`;}else{v='<b>'+esc(String(a.val||'—'))+'</b>';}return `<div style="font-size:11px;margin-bottom:3px"><span style="color:var(--g600)">${esc(a.q)}:</span> ${v}</div>`;}).join('');}
+function crmFeedbackEntryHtml(f){return `<div style="border:1px solid #C7D2FE;border-radius:6px;padding:7px 10px;margin-bottom:5px;background:#FAFAFF"><div style="font-size:10px;color:var(--g400);margin-bottom:4px">📝 ${LX('تقييم المدربة','Coach evaluation')}${f.at?' · '+esc(f.at):''}</div>${crmFbAnsHtml(f.answers)}</div>`;}
+function crmFeedbackInline(phone){const fb=crmFeedbackFor(phone);if(!fb.length)return '';return `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--g200)"><div style="font-size:11px;font-weight:700;color:#4338CA;margin-bottom:5px">📝 ${LX('تقييم المدربة بعد الحصة المجانية','Coach evaluation after free session')} (${fb.length})</div>${fb.map(crmFeedbackEntryHtml).join('')}</div>`;}
+function crmShowFeedback(phone){const np=crmNormPhone(phone);const cust=CUSTOMERS.find(c=>crmNormPhone(c.phone)===np);const fs=FREE_SESSIONS.find(f=>crmNormPhone(f.phone)===np);const name=(cust&&cust.name)||(fs&&fs.name)||phone;const fb=crmFeedbackFor(phone);openModal(`<h3>📝 ${LX('تقييم المدربة','Coach evaluation')} — ${esc(name)}</h3>${fb.length?fb.map(crmFeedbackEntryHtml).join(''):`<div class="crm-empty">${LX('لا تقييم','No evaluation')}</div>`}<div style="margin-top:12px"><button class="btn" style="width:100%" onclick="closeModal()">${LX('إغلاق','Close')}</button></div>`);}
+// -------- the public no-login form (?feedback=1) --------
+function fbHost(){let h=document.getElementById('fbApp');if(!h){h=document.createElement('div');h.id='fbApp';h.style.cssText='position:fixed;inset:0;z-index:100000;overflow:auto;background:linear-gradient(135deg,#312E81,#4338CA);display:flex;align-items:flex-start;justify-content:center;padding:26px 14px';document.body.appendChild(h);}return h;}
+function fbCard(inner){return `<div style="width:100%;max-width:480px;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.25);padding:22px 20px;font-family:inherit">${inner}</div>`;}
+function fbNow(){const d=new Date(),p=n=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());}
+async function fbBoot(){
+  const ov=document.getElementById('loginOverlay');if(ov)ov.style.display='none';
+  const h=fbHost();
+  h.innerHTML=fbCard(`<div style="text-align:center;color:var(--g500);font-size:14px">⏳ ${LX('جارٍ التحميل…','Loading…')}</div>`);
+  try{await auth.signInAnonymously();}
+  catch(e){h.innerHTML=fbCard(`<div style="text-align:center"><div style="font-size:34px">⚠️</div><h3 style="color:#B91C1C">${LX('تعذّر فتح النموذج','Could not open the form')}</h3><div style="font-size:12px;color:var(--g600);margin-top:6px">${LX('لازم تفعيل «تسجيل الدخول المجهول» (Anonymous) من إعدادات Firebase Authentication.','Anonymous sign-in must be enabled in Firebase Authentication settings.')}</div><div style="font-size:10px;color:var(--g400);margin-top:8px">${esc(e.code||e.message||'')}</div></div>`);return;}
+  try{const cf=await db.collection('app').doc('crm_config').get();const m=cf.exists?(cf.data().map||{}):{};window._FBQ=(Array.isArray(m.feedbackQuestions)&&m.feedbackQuestions.length)?m.feedbackQuestions:(CRM_CFG.feedbackQuestions||[]);}
+  catch(e){window._FBQ=CRM_CFG.feedbackQuestions||[];}
+  window._FBANS={};window._FBPHONE='';
+  fbRenderPhone();
+}
+function fbRenderPhone(){
+  fbHost().innerHTML=fbCard(`
+    <div style="text-align:center;margin-bottom:14px"><div style="font-size:34px">📝</div><h2 style="margin:6px 0 2px;color:#312E81">${LX('تقييم الحصة المجانية','Free-session evaluation')}</h2><div style="font-size:12px;color:var(--g500)">${LX('عبّئي التقييم بعد انتهاء الحصة المجانية','Fill this out after the free session ends')}</div></div>
+    <label class="form-label" style="font-weight:700">${LX('رقم جوال العميلة','Customer mobile')}</label>
+    <input id="fbPhone" type="tel" inputmode="numeric" dir="ltr" placeholder="05XXXXXXXX" value="${esc(window._FBPHONE||'')}" style="text-align:center;font-size:18px;letter-spacing:2px" onkeydown="if(event.key==='Enter')fbGoQuestions()"/>
+    <div id="fbPhoneErr" style="color:#B91C1C;font-size:12px;margin-top:6px;display:none">${LX('أدخلي رقم جوال صحيح','Enter a valid mobile number')}</div>
+    <button class="btn btn-primary btn-full" style="margin-top:16px;font-size:15px" onclick="fbGoQuestions()">${LX('التالي','Next')} →</button>`);
+  const el=document.getElementById('fbPhone');if(el)el.focus();
+}
+function fbGoQuestions(){
+  const el=document.getElementById('fbPhone');const raw=(el?el.value:'').trim();
+  if(crmNormPhone(raw).length<9){const e=document.getElementById('fbPhoneErr');if(e)e.style.display='block';return;}
+  window._FBPHONE=raw;fbRenderQuestions();
+}
+function fbStarsHtml(i,val){let s='';for(let n=1;n<=5;n++){s+=`<span onclick="fbSetStar(${i},${n})" style="cursor:pointer;font-size:30px;line-height:1;color:${n<=val?'#F59E0B':'#D1D5DB'}">★</span>`;}return `<div style="display:flex;gap:4px;direction:ltr;justify-content:center">${s}</div>`;}
+function fbChoiceHtml(i,opts,val){return `<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center">${(opts||[]).map(o=>`<button type="button" data-v="${esc(o)}" onclick="fbSetChoice(${i},this.dataset.v)" class="btn ${val===o?'btn-primary':''}" style="font-size:13px">${esc(o)}</button>`).join('')}</div>`;}
+function fbRenderQuestions(){
+  const qs=window._FBQ||[];const ans=window._FBANS||{};
+  if(!qs.length){fbHost().innerHTML=fbCard(`<div style="text-align:center;color:var(--g500)">${LX('لا توجد أسئلة بعد — تُضاف من الإدارة','No questions yet — added by admin')}</div><button class="btn btn-full" style="margin-top:14px" onclick="fbRenderPhone()">← ${LX('رجوع','Back')}</button>`);return;}
+  const body=qs.map((q,i)=>{
+    let field='';
+    if(q.type==='stars')field=fbStarsHtml(i,+ans[i]||0);
+    else if(q.type==='choice')field=fbChoiceHtml(i,q.options,ans[i]);
+    else field=`<textarea id="fbA-${i}" rows="3" placeholder="${LX('اكتبي هنا…','Type here…')}" style="width:100%;font-size:13px">${esc(ans[i]||'')}</textarea>`;
+    return `<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:700;margin-bottom:7px">${i+1}. ${esc(q.q)}</div>${field}</div>`;
+  }).join('');
+  fbHost().innerHTML=fbCard(`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3 style="margin:0;color:#312E81">📝 ${LX('التقييم','Evaluation')}</h3><span dir=ltr style="font-size:12px;color:var(--g500)">${esc(window._FBPHONE)}</span></div>
+    ${body}
+    <div id="fbSubMsg" style="font-size:12px;color:#B91C1C;margin-bottom:6px;display:none"></div>
+    <div style="display:flex;gap:8px"><button class="btn" style="flex:0 0 auto" onclick="fbCollectAnswers();fbRenderPhone()">← ${LX('رجوع','Back')}</button><button class="btn btn-primary" style="flex:1;font-size:15px" id="fbSendBtn" onclick="fbSubmit()">${LX('إرسال','Send')} ✓</button></div>`);
+}
+function fbCollectAnswers(){const qs=window._FBQ||[];window._FBANS=window._FBANS||{};qs.forEach((q,i)=>{if(q.type==='text'){const el=document.getElementById('fbA-'+i);if(el)window._FBANS[i]=el.value;}});}
+function fbSetStar(i,n){fbCollectAnswers();window._FBANS[i]=n;fbRenderQuestions();}
+function fbSetChoice(i,v){fbCollectAnswers();window._FBANS[i]=(window._FBANS[i]===v?'':v);fbRenderQuestions();}
+async function fbAppend(entry){return db.runTransaction(async tx=>{const ref=db.collection('app').doc('crm_feedback');const snap=await tx.get(ref);const list=snap.exists?(snap.data().list||[]):[];list.push(entry);tx.set(ref,{list});});}
+async function fbSubmit(){
+  fbCollectAnswers();
+  const qs=window._FBQ||[],ans=window._FBANS||{};
+  const answered=qs.some((q,i)=>{const v=ans[i];return q.type==='stars'?(+v>0):String(v||'').trim()!=='';});
+  if(!answered){const m=document.getElementById('fbSubMsg');if(m){m.textContent=LX('عبّئي سؤالاً واحداً على الأقل','Answer at least one question');m.style.display='block';}return;}
+  const btn=document.getElementById('fbSendBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';btn.textContent=LX('جارٍ الإرسال…','Sending…');}
+  const answers=qs.map((q,i)=>({q:q.q,type:q.type,val:ans[i]!=null?ans[i]:(q.type==='stars'?0:'')}));
+  const entry={id:Date.now()+'-'+Math.floor((performance.now()%1000)),ts:Date.now(),phone:window._FBPHONE,phoneNorm:crmNormPhone(window._FBPHONE),at:fbNow(),answers,_src:'coach-link'};
+  try{await fbAppend(entry);fbThanks();}
+  catch(e){const m=document.getElementById('fbSubMsg');if(m){m.textContent=LX('تعذّر الإرسال، حاولي مرة أخرى','Send failed, try again')+' — '+(e.code||e.message||'');m.style.display='block';}if(btn){btn.disabled=false;btn.style.opacity='';btn.textContent=LX('إرسال','Send')+' ✓';}}
+}
+function fbThanks(){
+  fbHost().innerHTML=fbCard(`<div style="text-align:center;padding:14px 0"><div style="font-size:46px">✅</div><h2 style="color:#166534;margin:10px 0 4px">${LX('تم الإرسال، شكراً لك','Sent — thank you')}</h2><div style="font-size:13px;color:var(--g500);margin-bottom:18px">${LX('وصل التقييم لفريق المبيعات','The evaluation reached the sales team')}</div><button class="btn btn-primary btn-full" style="font-size:15px" onclick="window._FBANS={};window._FBPHONE='';fbRenderPhone()">📝 ${LX('تقييم عميلة أخرى','Evaluate another customer')}</button></div>`);
+}
 </script>
 </body>
 </html>
