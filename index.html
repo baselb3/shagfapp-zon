@@ -1417,6 +1417,7 @@ async function doLogout(){
   if(!confirm(lang==='ar'?'تأكيد تسجيل الخروج؟':'Confirm logout?'))return;
   clearLoginTime();
   unsubscribeData();
+  try{crmUnsubscribe();}catch(_){}
   if(_backupTimer){clearTimeout(_backupTimer);_backupTimer=null;}
   try{ await auth.signOut(); }catch(e){}
   // Hard reload to reset all in-memory state cleanly.
@@ -3939,6 +3940,46 @@ async function loadCrmData(){
     CRM_FEEDBACK=fb.exists?(fb.data().list||[]):[];
   }catch(e){console.error('load crm_feedback',e);}
 }
+// ---------- live updates: onSnapshot on every CRM doc ----------
+// Mirrors the zone-side subscribeData(): any change any user makes is pushed to
+// every open CRM screen in well under a second, no manual refresh. Renders are
+// debounced and skipped while the user is typing in a field (so live updates
+// never clobber a search box or an open form).
+let _crmSubs=[];
+let _crmShardData={};
+let _crmRenderT=null;
+function crmScheduleRender(){
+  if(_crmRenderT)clearTimeout(_crmRenderT);
+  _crmRenderT=setTimeout(()=>{
+    _crmRenderT=null;
+    if(crmState.mode!=='crm')return;                 // globals stay fresh; render only in CRM mode
+    const ae=document.activeElement;
+    if(ae&&/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)&&ae.closest&&(ae.closest('#crmBody')||ae.closest('#modalBox'))){crmScheduleRender();return;} // user is editing — defer
+    const sc=window.scrollY;
+    try{crmRenderBell();crmRender();window.scrollTo(0,sc);}catch(e){console.error('crm live render',e);}
+  },200);
+}
+function crmUnsubscribe(){_crmSubs.forEach(u=>{try{u();}catch(_){}});_crmSubs=[];}
+function crmSubscribe(){
+  crmUnsubscribe();
+  const L=(name,fn)=>_crmSubs.push(db.collection('app').doc(name).onSnapshot(d=>{try{fn(d);}catch(e){console.error('crm snap '+name,e);}crmScheduleRender();},e=>console.error('crm listen '+name,e)));
+  if(_custSharded){
+    _crmShardData={};
+    for(let i=0;i<CUST_SHARDS;i++){(function(idx){_crmSubs.push(db.collection('app').doc(crmShardName(idx)).onSnapshot(d=>{_crmShardData[idx]=d.exists?(d.data().list||[]):[];const all=[];for(let k=0;k<CUST_SHARDS;k++)(_crmShardData[k]||[]).forEach(c=>all.push(c));CUSTOMERS=all;crmScheduleRender();},e=>console.error('crm shard',e)));})(i);}
+  }else{
+    L('customers',d=>{CUSTOMERS=d.exists?(d.data().list||[]):[];});
+  }
+  L('free_sessions',d=>{FREE_SESSIONS=d.exists?(d.data().list||[]):[];});
+  L('crm_service',d=>{const m=d.exists?(d.data().map||{}):{};CRM_SVC={complaints:m.complaints||[],suggestions:m.suggestions||[],desk:m.desk||[],followups:m.followups||[]};});
+  L('crm_config',d=>{if(d.exists){const m=d.data().map||{};Object.keys(CRM_CFG).forEach(k=>{if(Array.isArray(m[k])&&m[k].length)CRM_CFG[k]=m[k];});}});
+  L('crm_waitlist',d=>{WAITLIST=d.exists?(d.data().list||[]):[];});
+  L('crm_notifications',d=>{CRM_NOTIFS=d.exists?(d.data().map||{}):{};});
+  L('crm_uploads',d=>{CRM_UPLOADS=d.exists?(d.data().list||[]):[];});
+  L('crm_leads',d=>{LEADS=d.exists?(d.data().list||[]):[];});
+  L('crm_dashboards',d=>{CRM_DASH=d.exists?(d.data().map||{}):{};});
+  L('crm_todos',d=>{CRM_TODOS=d.exists?(d.data().list||[]):[];});
+  L('crm_feedback',d=>{CRM_FEEDBACK=d.exists?(d.data().list||[]):[];});
+}
 // record an upload event to the audit log
 function crmLogUpload(page,info){
   const e=Object.assign({id:Date.now(),page,by:currentUser?(lang==='ar'?currentUser.name_ar:currentUser.name_en):'',byUser:currentUser?currentUser.username:'',at:new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'})},info);
@@ -4160,6 +4201,7 @@ async function crmOnLogin(){
   crmApplyPerms();
   crmRenderBell();
   if(crmState.mode==='crm'){crmBuildNav();crmRender();}
+  crmSubscribe();   // live updates: any change shows on every screen in <1s
 }
 
 // ---------- rendering ----------
