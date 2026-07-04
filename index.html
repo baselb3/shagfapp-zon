@@ -1170,6 +1170,113 @@ async function crmRevertSharding(){
   }catch(e){console.error('revert',e);toast(LX('❌ فشل الرجوع: ','❌ Revert failed: ')+e.message);}
 }
 
+// ===================== FREE SESSIONS STORAGE (shardable) =====================
+// Same pattern as customers: app/free_sessions is ONE array doc (whole-doc
+// rewrite per edit → 1MB ceiling → the «فشل» error when it fills up). It can
+// split across FREE_SHARDS docs (app/free_sessions_0 … free_sessions_15) keyed
+// by a hash of sessionId, so an edit rewrites only ONE small shard and the
+// ceiling rises to ~16MB. Marker doc app/free_sessions_meta{sharded}.
+const FREE_SHARDS=16;
+let _freeSharded=false;
+let _crmFreeShardData={};
+function crmFreeShardName(i){return 'free_sessions_'+i;}
+async function loadFreeSessions(){
+  const meta=await db.collection('app').doc('free_sessions_meta').get();
+  if(meta.exists && meta.data().sharded){
+    _freeSharded=true;
+    const snaps=await Promise.all(Array.from({length:FREE_SHARDS},(_,i)=>db.collection('app').doc(crmFreeShardName(i)).get()));
+    const all=[];snaps.forEach(s=>{if(s.exists)(s.data().list||[]).forEach(f=>all.push(f));});
+    FREE_SESSIONS=all;
+  }else{
+    _freeSharded=false;
+    const fs=await db.collection('app').doc('free_sessions').get();
+    FREE_SESSIONS=fs.exists?(fs.data().list||[]):[];
+  }
+}
+// Edit ONE session by sessionId. fn(session)->new session, or null to delete.
+async function crmWriteFree(sid,fn){
+  const apply=(list)=>{
+    const i=list.findIndex(f=>f.sessionId===sid);
+    if(i<0)return list;
+    const nf=fn(list[i]);
+    const copy=list.slice();
+    if(nf==null)copy.splice(i,1);else copy[i]=nf;
+    return copy;
+  };
+  if(_freeSharded){
+    const shard=crmFreeShardName(crmShardOf(sid));
+    const newShard=await mutateListDoc(shard,apply);
+    const i=FREE_SESSIONS.findIndex(f=>f.sessionId===sid);
+    const updated=newShard.find(f=>f.sessionId===sid);
+    if(i>=0){if(updated)FREE_SESSIONS[i]=updated;else FREE_SESSIONS.splice(i,1);}
+    return FREE_SESSIONS;
+  }
+  const n=await mutateListDoc('free_sessions',apply);FREE_SESSIONS=n;return FREE_SESSIONS;
+}
+// Bulk rewrite (import / undo-batch): mergeFn(currentFullList)->newFullList.
+async function crmBulkFree(mergeFn){
+  if(_mutInflight['__freebulk']){try{toast(LX('⏳ جارٍ الحفظ، انتظر لحظة…','⏳ Saving, please wait…'));}catch(_){}return new Promise(()=>{});}
+  _mutInflight['__freebulk']=true;crmLockUI(true);
+  try{
+    if(!_freeSharded){const n=await mutateListDoc('free_sessions',mergeFn);FREE_SESSIONS=n;return n;}
+    const snaps=await Promise.all(Array.from({length:FREE_SHARDS},(_,i)=>db.collection('app').doc(crmFreeShardName(i)).get()));
+    const cur=[];snaps.forEach(s=>{if(s.exists)(s.data().list||[]).forEach(f=>cur.push(f));});
+    const next=mergeFn(cur);
+    if(!Array.isArray(next))throw new Error('mergeFn must return array');
+    const buckets=Array.from({length:FREE_SHARDS},()=>[]);
+    next.forEach(f=>buckets[crmShardOf(f.sessionId)].push(f));
+    await Promise.all(buckets.map((b,i)=>db.collection('app').doc(crmFreeShardName(i)).set({list:b})));
+    FREE_SESSIONS=next;return next;
+  }finally{_mutInflight['__freebulk']=false;crmLockUI(false);}
+}
+async function crmClearFreeStore(){
+  if(_freeSharded){await Promise.all(Array.from({length:FREE_SHARDS},(_,i)=>db.collection('app').doc(crmFreeShardName(i)).set({list:[]})));}
+  else{await db.collection('app').doc('free_sessions').set({list:[]});}
+  FREE_SESSIONS=[];
+}
+async function crmExportFreeBackup(){
+  if(!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Super-admin only'));return;}
+  let data;
+  try{const fs=await db.collection('app').doc('free_sessions').get();data=fs.exists?(fs.data().list||[]):[];}
+  catch(e){toast(LX('❌ فشل القراءة','❌ Read failed'));return;}
+  const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),count:data.length,list:data},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='free-sessions-backup-'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a);a.click();a.remove();
+  toast(LX('💾 تم تنزيل النسخة الاحتياطية ('+data.length+' حصة)','💾 Backup downloaded ('+data.length+' sessions)'));
+}
+async function crmMigrateFreeToShards(){
+  if(!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Super-admin only'));return;}
+  if(!confirm(LX('تقسيم الحصص المجانية لتسريع الحفظ ورفع سقف الحجم؟ المستند القديم يبقى كما هو كاحتياطي.','Split free sessions to speed up saving and raise the size ceiling? The old doc is kept as a backup.')))return;
+  try{
+    const fs=await db.collection('app').doc('free_sessions').get();
+    const list=fs.exists?(fs.data().list||[]):[];
+    const buckets=Array.from({length:FREE_SHARDS},()=>[]);
+    list.forEach(f=>buckets[crmShardOf(f.sessionId)].push(f));
+    await Promise.all(buckets.map((b,i)=>db.collection('app').doc(crmFreeShardName(i)).set({list:b})));
+    await db.collection('app').doc('free_sessions_meta').set({sharded:true,migratedAt:new Date().toISOString(),count:list.length,shards:FREE_SHARDS});
+    _freeSharded=true;FREE_SESSIONS=list;
+    try{logHistory(LX('ترحيل الحصص لشرائح','Migrate free sessions to shards'),list.length+' '+LX('حصة','sessions'),'edit');}catch(e){}
+    toast(LX('✅ تم تقسيم الحصص ('+list.length+' على '+FREE_SHARDS+' شرائح)','✅ Free sessions sharded ('+list.length+' across '+FREE_SHARDS+')'));
+    if(typeof crmSubscribe==='function')crmSubscribe();
+    crmRender();
+  }catch(e){console.error('migrate free',e);toast(LX('❌ فشل التقسيم: ','❌ Migration failed: ')+e.message);}
+}
+async function crmRevertFreeSharding(){
+  if(!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Super-admin only'));return;}
+  if(!confirm(LX('الرجوع لتخزين الحصص في مستند واحد؟ تُدمج الشرائح في app/free_sessions. آمن ولا يفقد بيانات.','Revert free sessions to a single doc? Shards merge back into app/free_sessions. Safe, no data loss.')))return;
+  try{
+    const snaps=await Promise.all(Array.from({length:FREE_SHARDS},(_,i)=>db.collection('app').doc(crmFreeShardName(i)).get()));
+    const all=[];snaps.forEach(s=>{if(s.exists)(s.data().list||[]).forEach(f=>all.push(f));});
+    await db.collection('app').doc('free_sessions').set({list:all});
+    await db.collection('app').doc('free_sessions_meta').set({sharded:false,revertedAt:new Date().toISOString(),count:all.length});
+    _freeSharded=false;FREE_SESSIONS=all;
+    if(typeof crmSubscribe==='function')crmSubscribe();
+    crmRender();
+    toast(LX('↩️ تم الرجوع للمستند الواحد ('+all.length+' حصة)','↩️ Reverted to single doc ('+all.length+' sessions)'));
+  }catch(e){console.error('revert free',e);toast(LX('❌ فشل الرجوع: ','❌ Revert failed: ')+e.message);}
+}
+
 // Mutable pricing array (starts as copy of default)
 const PRICING=JSON.parse(JSON.stringify(PRICING_TABLE));
 
@@ -3898,10 +4005,7 @@ async function loadCrmData(){
   try{
     await loadCustomers();
   }catch(e){console.error('load customers',e);}
-  try{
-    const fs=await db.collection('app').doc('free_sessions').get();
-    FREE_SESSIONS=fs.exists?(fs.data().list||[]):[];
-  }catch(e){console.error('load free_sessions',e);}
+  try{ await loadFreeSessions(); }catch(e){console.error('load free_sessions',e);}
   try{
     const sv=await db.collection('app').doc('crm_service').get();
     const m=sv.exists?(sv.data().map||{}):{};
@@ -3969,7 +4073,12 @@ function crmSubscribe(){
   }else{
     L('customers',d=>{CUSTOMERS=d.exists?(d.data().list||[]):[];});
   }
-  L('free_sessions',d=>{FREE_SESSIONS=d.exists?(d.data().list||[]):[];});
+  if(_freeSharded){
+    _crmFreeShardData={};
+    for(let i=0;i<FREE_SHARDS;i++){(function(idx){_crmSubs.push(db.collection('app').doc(crmFreeShardName(idx)).onSnapshot(d=>{_crmFreeShardData[idx]=d.exists?(d.data().list||[]):[];const all=[];for(let k=0;k<FREE_SHARDS;k++)(_crmFreeShardData[k]||[]).forEach(f=>all.push(f));FREE_SESSIONS=all;crmScheduleRender();},e=>console.error('free shard',e)));})(i);}
+  }else{
+    L('free_sessions',d=>{FREE_SESSIONS=d.exists?(d.data().list||[]):[];});
+  }
   L('crm_service',d=>{const m=d.exists?(d.data().map||{}):{};CRM_SVC={complaints:m.complaints||[],suggestions:m.suggestions||[],desk:m.desk||[],followups:m.followups||[]};});
   L('crm_config',d=>{if(d.exists){const m=d.data().map||{};Object.keys(CRM_CFG).forEach(k=>{if(Array.isArray(m[k])&&m[k].length)CRM_CFG[k]=m[k];});}});
   L('crm_waitlist',d=>{WAITLIST=d.exists?(d.data().list||[]):[];});
@@ -4961,7 +5070,7 @@ function importFreeSessions(rows){
   const batchId='b'+Date.now();
   const parsed=data.map(r=>{const g=crmGeocode(r[F.addr]||'');return {sessionId:String(r[F.sid]).trim(),phone:String(r[F.mob]).trim(),name:r[F.name]||'',email:r[F.email]||'',address:r[F.addr]||'',city:g.city||null,cityName:g.cityName||'',zoneId:(g.zoneId==null?null:g.zoneId),package:r[F.pkg]||'',expiry:String(r[F.exp]||'').slice(0,10),trainer:r[F.trainer]||'',scheduledDate:r[F.sched]||'',createdDate:r[F.cdate]||'',status:mapStatus(r[F.st]),notSubReason:'',calledBy:'',followNote:''};});
   let before=0;
-  mutateListDoc('free_sessions',current=>{
+  crmBulkFree(current=>{
     before=current.length;
     const map={};current.forEach(f=>map[f.sessionId]=f);
     parsed.forEach(p=>{ if(map[p.sessionId]){const o=map[p.sessionId];
@@ -4995,7 +5104,7 @@ function crmDeleteFreeSession(sid){
   if(typeof isSuperAdmin!=='function'||!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Manager only'));return;}
   const f=FREE_SESSIONS.find(x=>x.sessionId===sid);
   if(!confirm(LX('حذف هذه الحصة نهائياً؟ ','Delete this session? ')+(f?(f.name||'')+' · '+(f.phone||''):'')))return;
-  mutateListDoc('free_sessions',cur=>cur.filter(x=>x.sessionId!==sid)).then(n=>{FREE_SESSIONS=n;toast('🗑 '+LX('حُذفت','Deleted'));try{logHistory(LX('حذف حصة مجانية','Delete free session'),(f&&f.phone)||sid,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  crmWriteFree(sid,()=>null).then(()=>{toast('🗑 '+LX('حُذفت','Deleted'));try{logHistory(LX('حذف حصة مجانية','Delete free session'),(f&&f.phone)||sid,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmFreeSessions(){
   const up=can('upload_data')?`<div class="crm-upload"><span style="font-size:12px;color:var(--primary);font-weight:600">📄 ${LX('ارفع يومياً الحصص المجانية المجدولة — والحالة تُدار من هنا (تأكيد/إلغاء) + من حجزها','Upload scheduled free sessions daily — manage status here (confirm/cancel) + who booked')}</span><button class="btn btn-primary" onclick="document.getElementById('freeFile').click()">📥 ${LX('رفع ملف الحصص','Upload sessions file')}</button></div>`:'';
@@ -5052,8 +5161,7 @@ function crmFreeSessions(){
   }).join('')}</tbody></table></div>`;
 }
 function crmSetFreeStatus(sid,status){
-  FREE_SESSIONS=FREE_SESSIONS.map(f=>f.sessionId===sid?Object.assign({},f,{status}):f);
-  mutateListDoc('free_sessions',cur=>cur.map(f=>f.sessionId===sid?Object.assign({},f,{status}):f)).then(n=>{FREE_SESSIONS=n;toast(status==='cancelled'?LX('🗑 أُلغيت','🗑 Cancelled'):(status==='confirmed'?LX('✅ تأكيد','✅ Confirmed'):LX('↩️ استُعيدت','↩️ Restored')));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  crmWriteFree(sid,f=>Object.assign({},f,{status})).then(()=>{toast(status==='cancelled'?LX('🗑 أُلغيت','🗑 Cancelled'):(status==='confirmed'?LX('✅ تأكيد','✅ Confirmed'):LX('↩️ استُعيدت','↩️ Restored')));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmSetFreeStatus2(s){crmState.freeStatus=s;crmRender();}
 function crmFreeStatusMatch(f){
@@ -5065,8 +5173,7 @@ function crmFreeStatusMatch(f){
   return f.status!=='cancelled'; // '' = active (non-cancelled)
 }
 function crmSetFreeBookedBy(sid,who){
-  FREE_SESSIONS=FREE_SESSIONS.map(f=>f.sessionId===sid?Object.assign({},f,{bookedBy:who}):f);
-  mutateListDoc('free_sessions',cur=>cur.map(f=>f.sessionId===sid?Object.assign({},f,{bookedBy:who}):f)).then(n=>{FREE_SESSIONS=n;toast(LX('💾 تم','💾 Saved'));}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  crmWriteFree(sid,f=>Object.assign({},f,{bookedBy:who})).then(()=>{toast(LX('💾 تم','💾 Saved'));}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 function crmFreeFollowForm(sid){
   const f=FREE_SESSIONS.find(x=>x.sessionId===sid);if(!f)return;
@@ -5088,8 +5195,7 @@ function crmFreeFollowSave(sid){
   if(!note&&!nextDate&&!reason){toast(LX('اكتب ملاحظة أو تاريخ متابعة','Enter a note or follow-up date'));return;}
   const entry={at:new Date().toLocaleString(lang==='ar'?'ar-SA':'en-GB',{dateStyle:'short',timeStyle:'short'}),by,note,reason,nextDate};
   const apply=f=>Object.assign({},f,{followLog:(f.followLog||[]).concat(entry),followDate:nextDate||f.followDate||'',notSubReason:reason||f.notSubReason||'',calledBy:by||f.calledBy||''});
-  FREE_SESSIONS=FREE_SESSIONS.map(f=>f.sessionId===sid?apply(f):f);
-  mutateListDoc('free_sessions',cur=>cur.map(f=>f.sessionId===sid?apply(f):f)).then(n=>{FREE_SESSIONS=n;closeModal();toast(LX('💾 تمت إضافة المتابعة','💾 Follow-up added'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
+  crmWriteFree(sid,apply).then(()=>{closeModal();toast(LX('💾 تمت إضافة المتابعة','💾 Follow-up added'));crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
 
 // ---------- تعديل اشتراك العميل (بداية/نهاية + سبب) مع سجل ----------
@@ -5547,7 +5653,7 @@ function crmSettings(){
       <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('أضف مستخدمين وحدّد صلاحيات كل واحد بدقة — صلاحيات الزون والـ CRM من نفس المكان','Add users and set each one’s permissions precisely — both Zone and CRM permissions from one place')}</div>
       <div id="usersListEl"></div><div id="adminUsersBtns"></div></div>`:'';
   return `<h3 style="margin:0 0 12px;font-size:16px">⚙️ ${LX('إعدادات الـ CRM','CRM Settings')}</h3>
-    ${users}${cfg}${crmFeedbackSettings()}${crmPerfCard()}
+    ${users}${cfg}${crmFeedbackSettings()}${crmPerfCard()}${crmFreePerfCard()}
     ${can('manage_complaints')?crmUploadLog()+crmDangerZone():''}`;
 }
 function crmPerfCard(){
@@ -5563,6 +5669,23 @@ function crmPerfCard(){
       <button class="btn" style="font-size:12px;color:var(--blue);border-color:#BFDBFE" onclick="crmExportCustomersBackup()">⬇️ ${LX('١) نزّل نسخة احتياطية','1) Download backup')}</button>
       ${_custSharded?'':`<button class="btn btn-primary" style="font-size:12px" onclick="crmMigrateToShards()">⚡ ${LX('٢) فعّل التقسيم','2) Enable sharding')}</button>`}
       ${_custSharded?`<button class="btn" style="font-size:12px" onclick="crmRevertSharding()">↩️ ${LX('الرجوع للمستند الواحد','Revert to single doc')}</button>`:''}
+    </div>
+    <div style="font-size:11px;color:#B91C1C;margin-top:8px">${LX('انزل النسخة الاحتياطية أولاً. المستند القديم يبقى محفوظاً ولا يُحذف.','Download the backup first. The old doc is kept and never deleted.')}</div>
+  </div>`;
+}
+function crmFreePerfCard(){
+  if(!isSuperAdmin())return '';
+  const status=_freeSharded
+    ? `<span class="crm-pill pill-green">${LX('مُفعّل — الحصص مقسّمة على '+FREE_SHARDS+' شرائح','Active — split across '+FREE_SHARDS+' shards')}</span>`
+    : `<span class="crm-pill pill-amber">${LX('غير مُفعّل — مستند واحد','Not active — single doc')}</span>`;
+  return `<div class="crm-card" style="border:1px solid #BFDBFE;background:#EFF6FF">
+    <h3 style="color:#1E40AF">⚡ ${LX('تسريع حفظ الحصص المجانية (تقسيم البيانات)','Speed up free-session saving (sharding)')}</h3>
+    <div style="font-size:11px;color:var(--g600);margin-bottom:8px">${LX('يقسّم الحصص المجانية على عدة مستندات فلا تصل حد الحجم (١ ميجابايت) — ينهي مشكلة «فشل» عند حفظ المتابعة/التأكيد نهائياً. كل الحصص تبقى ظاهرة.','Splits free sessions across several docs so they never hit the 1MB ceiling — permanently ends the “failed” save error. All sessions stay visible.')}</div>
+    <div style="margin-bottom:10px">${LX('الحالة','Status')}: ${status}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" style="font-size:12px;color:var(--blue);border-color:#BFDBFE" onclick="crmExportFreeBackup()">⬇️ ${LX('١) نزّل نسخة احتياطية','1) Download backup')}</button>
+      ${_freeSharded?'':`<button class="btn btn-primary" style="font-size:12px" onclick="crmMigrateFreeToShards()">⚡ ${LX('٢) فعّل التقسيم','2) Enable sharding')}</button>`}
+      ${_freeSharded?`<button class="btn" style="font-size:12px" onclick="crmRevertFreeSharding()">↩️ ${LX('الرجوع للمستند الواحد','Revert to single doc')}</button>`:''}
     </div>
     <div style="font-size:11px;color:#B91C1C;margin-top:8px">${LX('انزل النسخة الاحتياطية أولاً. المستند القديم يبقى محفوظاً ولا يُحذف.','Download the backup first. The old doc is kept and never deleted.')}</div>
   </div>`;
@@ -5585,7 +5708,7 @@ function crmUndoUpload(batch,page,logId){
   if(page==='sales'){
     job=crmBulkRewrite(cur=>cur.map(c=>Object.assign({},c,{txns:(c.txns||[]).filter(t=>t._batch!==batch)})).filter(c=>(c.txns||[]).length)).then(n=>{CUSTOMERS=n;});
   }else if(page==='free'){
-    job=mutateListDoc('free_sessions',cur=>cur.filter(f=>f._batch!==batch)).then(n=>{FREE_SESSIONS=n;});
+    job=crmBulkFree(cur=>cur.filter(f=>f._batch!==batch)).then(n=>{FREE_SESSIONS=n;});
   }else if(page==='leads'){
     job=mutateListDoc('crm_leads',cur=>cur.filter(l=>l._batch!==batch)).then(n=>{LEADS=n;});
   }else{toast(LX('نوع غير معروف','Unknown type'));return;}
@@ -5612,7 +5735,7 @@ function crmClearData(which){
   if(!confirm(LX('تأكيد أخير — لا رجعة. متابعة؟','Final confirmation — no undo. Proceed?')))return;
   const jobs=[];
   if(which==='customers'||which==='all')jobs.push(crmClearCustomersStore());
-  if(which==='free'||which==='all')jobs.push(db.collection('app').doc('free_sessions').set({list:[]}).then(()=>{FREE_SESSIONS=[];}));
+  if(which==='free'||which==='all')jobs.push(crmClearFreeStore());
   if(which==='service'||which==='all')jobs.push(db.collection('app').doc('crm_service').set({map:{complaints:[],suggestions:[],desk:[],followups:[]}}).then(()=>{CRM_SVC={complaints:[],suggestions:[],desk:[],followups:[]};}));
   if(which==='leads'||which==='all')jobs.push(db.collection('app').doc('crm_leads').set({list:[]}).then(()=>{LEADS=[];}));
   Promise.all(jobs).then(()=>{toast('🗑 '+LX('تم الحذف','Deleted'));try{logHistory(LX('حذف بيانات CRM','Clear CRM data'),names[which],'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل الحذف: ','❌ Delete failed: ')+e.message);});
