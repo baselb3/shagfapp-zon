@@ -5715,9 +5715,17 @@ async function fbBoot(){
   const ov=document.getElementById('loginOverlay');if(ov)ov.style.display='none';
   const h=fbHost();
   h.innerHTML=fbCard(`<div style="text-align:center;color:var(--g500);font-size:14px">⏳ ${LX('جارٍ التحميل…','Loading…')}</div>`);
-  try{await auth.signInAnonymously();}
+  try{
+    // Dedicated, ISOLATED Firebase app for the public form: its own in-memory
+    // auth (Persistence.NONE) so signing in anonymously here NEVER replaces a
+    // staff member's session when the link is opened in the same browser.
+    const fbApp=firebase.apps.find(a=>a.name==='feedback')||firebase.initializeApp(firebaseConfig,'feedback');
+    window._fbAuth=fbApp.auth();window._fbDb=fbApp.firestore();
+    try{await window._fbAuth.setPersistence(firebase.auth.Auth.Persistence.NONE);}catch(_){}
+    await window._fbAuth.signInAnonymously();
+  }
   catch(e){h.innerHTML=fbCard(`<div style="text-align:center"><div style="font-size:34px">⚠️</div><h3 style="color:#B91C1C">${LX('تعذّر فتح النموذج','Could not open the form')}</h3><div style="font-size:12px;color:var(--g600);margin-top:6px">${LX('لازم تفعيل «تسجيل الدخول المجهول» (Anonymous) من إعدادات Firebase Authentication.','Anonymous sign-in must be enabled in Firebase Authentication settings.')}</div><div style="font-size:10px;color:var(--g400);margin-top:8px">${esc(e.code||e.message||'')}</div></div>`);return;}
-  try{const cf=await db.collection('app').doc('crm_config').get();const m=cf.exists?(cf.data().map||{}):{};window._FBQ=(Array.isArray(m.feedbackQuestions)&&m.feedbackQuestions.length)?m.feedbackQuestions:(CRM_CFG.feedbackQuestions||[]);}
+  try{const cf=await window._fbDb.collection('app').doc('crm_config').get();const m=cf.exists?(cf.data().map||{}):{};window._FBQ=(Array.isArray(m.feedbackQuestions)&&m.feedbackQuestions.length)?m.feedbackQuestions:(CRM_CFG.feedbackQuestions||[]);}
   catch(e){window._FBQ=CRM_CFG.feedbackQuestions||[];}
   window._FBANS={};window._FBPHONE='';
   fbRenderPhone();
@@ -5760,7 +5768,7 @@ function fbRenderQuestions(){
 function fbCollectAnswers(){const qs=window._FBQ||[];window._FBANS=window._FBANS||{};qs.forEach((q,i)=>{if(q.type==='text'){const el=document.getElementById('fbA-'+i);if(el)window._FBANS[i]=el.value;}});}
 function fbSetStar(i,n){fbCollectAnswers();window._FBANS[i]=n;fbRenderQuestions();}
 function fbSetChoice(i,v){fbCollectAnswers();window._FBANS[i]=(window._FBANS[i]===v?'':v);fbRenderQuestions();}
-async function fbAppend(entry){return db.runTransaction(async tx=>{const ref=db.collection('app').doc('crm_feedback');const snap=await tx.get(ref);const list=snap.exists?(snap.data().list||[]):[];list.push(entry);tx.set(ref,{list});});}
+async function fbAppend(entry){const D=window._fbDb||db;return D.runTransaction(async tx=>{const ref=D.collection('app').doc('crm_feedback');const snap=await tx.get(ref);const list=snap.exists?(snap.data().list||[]):[];list.push(entry);tx.set(ref,{list});});}
 async function fbSubmit(){
   fbCollectAnswers();
   const qs=window._FBQ||[],ans=window._FBANS||{};
