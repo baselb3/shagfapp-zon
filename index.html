@@ -5170,8 +5170,102 @@ function crmDeleteFreeSession(sid){
   if(!confirm(LX('حذف هذه الحصة نهائياً؟ ','Delete this session? ')+(f?(f.name||'')+' · '+(f.phone||''):'')))return;
   crmWriteFree(sid,()=>null).then(()=>{toast('🗑 '+LX('حُذفت','Deleted'));try{logHistory(LX('حذف حصة مجانية','Delete free session'),(f&&f.phone)||sid,'delete');}catch(e){}crmRender();}).catch(e=>{console.error(e);toast(LX('❌ فشل','❌ Failed'));});
 }
+// ---- تنظيف المكرر القديم: دمج الصفوف التي تمثّل نفس الحصة --------------------
+// نفس قاعدة الرفع: نفس الجوال + نفس يوم الحصة (والصفوف بلا تاريخ: نفس الجوال).
+// أيام مختلفة = حصص مختلفة فعلاً ولا تُدمج.
+function crmFreeDupGroups(list){
+  const by={};
+  (list||[]).forEach((f,i)=>{const k=crmFreePDKey(f);if(!k)return;(by[k]=by[k]||[]).push(i);});
+  return Object.keys(by).filter(k=>by[k].length>1).map(k=>({key:k,idx:by[k]}));
+}
+function crmFreeBatchNum(f){const m=/^b(\d+)$/.exec(String(f._batch||''));return m?+m[1]:0;}
+// يطوي صفّاً فوق آخر بنفس منطق الرفع: الأحدث يفوز في بيانات الملف، والعمل اليدوي لا يضيع.
+function crmFreeFold(acc,f){
+  const altIds=(acc.altIds||[]).slice();
+  [f.sessionId].concat(f.altIds||[]).forEach(id=>{id=String(id);if(id&&id!==String(acc.sessionId)&&altIds.indexOf(id)<0)altIds.push(id);});
+  const log=(acc.followLog||[]).concat(f.followLog||[]);
+  const seen={},mergedLog=[];
+  log.forEach(e=>{const k=JSON.stringify([e&&e.at,e&&e.note,e&&e.reason]);if(!seen[k]){seen[k]=1;mergedLog.push(e);}});
+  const status=(f.status==='confirmed'||f.status==='cancelled')?f.status:(acc.status||f.status);
+  return Object.assign({},acc,f,{
+    sessionId:acc.sessionId,altIds:altIds,status:status,
+    name:crmFreeKeep(f.name,acc.name),email:crmFreeKeep(f.email,acc.email),address:crmFreeKeep(f.address,acc.address),
+    city:f.city||acc.city||null,cityName:crmFreeKeep(f.cityName,acc.cityName),
+    zoneId:(f.zoneId==null?(acc.zoneId==null?null:acc.zoneId):f.zoneId),
+    package:crmFreeKeep(f.package,acc.package),expiry:crmFreeKeep(f.expiry,acc.expiry),
+    trainer:crmFreeKeep(f.trainer,acc.trainer),scheduledDate:crmFreeKeep(f.scheduledDate,acc.scheduledDate),
+    createdDate:crmFreeKeep(acc.createdDate,f.createdDate),
+    // العمل اليدوي: أي قيمة غير فاضية تُحفظ، والمتابعات تُجمع كلها
+    notSubReason:crmFreeKeep(acc.notSubReason,f.notSubReason),calledBy:crmFreeKeep(acc.calledBy,f.calledBy),
+    followNote:crmFreeKeep(acc.followNote,f.followNote),bookedBy:crmFreeKeep(acc.bookedBy,f.bookedBy),
+    followDate:crmFreeKeep(acc.followDate,f.followDate),followLog:mergedLog,
+    _batch:acc._batch||f._batch
+  });
+}
+// يبني القائمة بعد الدمج + إحصاءات. لا يكتب شيئاً.
+function crmFreeDedupePlan(list){
+  const groups=crmFreeDupGroups(list),drop={},merged={};
+  groups.forEach(g=>{
+    const rows=g.idx.map(i=>list[i]).slice().sort((a,b)=>(crmFreeBatchNum(a)-crmFreeBatchNum(b))||String(a.sessionId).localeCompare(String(b.sessionId)));
+    let acc=rows[0];for(let i=1;i<rows.length;i++)acc=crmFreeFold(acc,rows[i]);
+    merged[g.idx[0]]=acc;g.idx.slice(1).forEach(i=>drop[i]=1);
+    g.rows=rows;
+  });
+  const out=[];list.forEach((f,i)=>{if(drop[i])return;out.push(merged[i]||f);});
+  return {list:out,groups:groups,removed:Object.keys(drop).length};
+}
+function crmFreeDedupeOpen(){
+  if(!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Super-admin only'));return;}
+  const plan=crmFreeDedupePlan(FREE_SESSIONS||[]);
+  const phoneOnly={};(FREE_SESSIONS||[]).forEach(f=>{const p=crmNormPhone(f.phone);if(p)phoneOnly[p]=(phoneOnly[p]||0)+1;});
+  const samePhoneRows=Object.keys(phoneOnly).reduce((n,p)=>n+(phoneOnly[p]>1?phoneOnly[p]:0),0);
+  if(!plan.groups.length){openModal(`<h3>🧹 ${LX('دمج الحصص المكررة','Merge duplicate sessions')}</h3><div class="crm-empty">${LX('لا يوجد تكرار حسب القاعدة (نفس الجوال + نفس اليوم)','No duplicates by the rule (same phone + same day)')}</div><button class="btn" style="width:100%;margin-top:10px" onclick="closeModal()">${LX('إغلاق','Close')}</button>`);return;}
+  const sample=plan.groups.slice(0,25).map(g=>{
+    const r=g.rows[0],st=g.rows.map(x=>x.status==='confirmed'?LX('مؤكدة','Conf'):x.status==='cancelled'?LX('ملغاة','Canc'):LX('غير مؤكدة','Unconf')).join(' + ');
+    return `<tr><td>${esc(r.name||'—')}</td><td dir=ltr style="font-size:11px">${esc(r.phone||'')}</td><td style="white-space:nowrap">${esc(crmFreeDayKey(r.scheduledDate)||LX('بلا تاريخ','no date'))}</td><td>${g.rows.length}</td><td style="font-size:10px">${esc(st)}</td></tr>`;}).join('');
+  openModal(`<h3>🧹 ${LX('دمج الحصص المكررة','Merge duplicate sessions')}</h3>
+    <div style="font-size:13px;margin:10px 0">
+      <div style="display:flex;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--g100)"><span>📋 ${LX('إجمالي الحصص الآن','Sessions now')}</span><b>${(FREE_SESSIONS||[]).length}</b></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--g100)"><span>🔁 ${LX('مجموعات مكررة (نفس الجوال + نفس اليوم)','Duplicate groups (same phone + same day)')}</span><b style="color:#92400E">${plan.groups.length}</b></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--g100)"><span>🗑 ${LX('صفوف ستُدمج وتختفي','Rows to be merged away')}</span><b style="color:#991B1B">${plan.removed}</b></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--g100)"><span>✅ ${LX('الإجمالي بعد الدمج','Total after merge')}</span><b style="color:#065F46">${plan.list.length}</b></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 2px"><span>ℹ️ ${LX('صفوف بنفس الجوال بأيام مختلفة (لن تُدمج)','Same phone on different days (kept)')}</span><b>${Math.max(0,samePhoneRows-plan.removed-plan.groups.length)}</b></div>
+    </div>
+    <div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('يُحتفظ بأقدم صف كأساس، وتُجمع عليه المتابعات والملاحظات ومن حجزها، والحالة الحاسمة الأحدث (مؤكدة/ملغاة) تفوز. المعرّفات القديمة تُحفظ في altIds.','The oldest row is kept as the base; follow-ups, notes and “booked by” are merged onto it, and the newest definitive status (confirmed/cancelled) wins. Old IDs are kept in altIds.')}</div>
+    <div style="max-height:240px;overflow:auto;border:1px solid var(--g100);border-radius:8px;margin-bottom:10px">
+      <table class="crm-table"><thead><tr><th>${LX('العميل','Customer')}</th><th>${LX('الجوال','Mobile')}</th><th>${LX('اليوم','Day')}</th><th>${LX('صفوف','Rows')}</th><th>${LX('الحالات','Statuses')}</th></tr></thead><tbody>${sample}</tbody></table>
+    </div>
+    ${plan.groups.length>25?`<div style="font-size:11px;color:var(--g400);margin-bottom:8px">${LX('… وعرض أول 25 مجموعة فقط','… showing the first 25 groups only')}</div>`:''}
+    <div style="display:flex;gap:8px">
+      <button class="btn" onclick="crmFreeSnapshotBackup()">💾 ${LX('نسخة احتياطية','Backup')}</button>
+      <button class="btn btn-primary" style="flex:1" onclick="crmFreeDedupeApply()">🧹 ${LX('نفّذ الدمج','Merge now')}</button>
+      <button class="btn" onclick="closeModal()">${LX('إلغاء','Cancel')}</button>
+    </div>`);
+}
+// نسخة احتياطية من الحالة الحالية (تشمل الشرائح، بعكس النسخة القديمة من مستند واحد)
+function crmFreeSnapshotBackup(){
+  const data=FREE_SESSIONS||[];
+  const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),count:data.length,list:data},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='free-sessions-'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a);a.click();a.remove();
+  toast(LX('💾 نُزّلت نسخة احتياطية ('+data.length+' حصة)','💾 Backup downloaded ('+data.length+' sessions)'));
+}
+function crmFreeDedupeApply(){
+  if(!isSuperAdmin()){toast(LX('المدير الأساسي فقط','Super-admin only'));return;}
+  if(!confirm(LX('دمج الحصص المكررة نهائياً؟ يُنصح بتنزيل نسخة احتياطية أولاً.','Merge duplicate sessions permanently? Download a backup first.')))return;
+  closeModal();
+  let stats=null,before=0;
+  crmBulkFree(current=>{before=current.length;const p=crmFreeDedupePlan(current);stats={groups:p.groups.length,removed:p.removed};return p.list;}).then(next=>{
+    FREE_SESSIONS=next;
+    toast(LX(`🧹 دُمجت ${stats.groups} مجموعة — حُذف ${stats.removed} صف مكرر (${before} → ${next.length})`,
+             `🧹 Merged ${stats.groups} groups — removed ${stats.removed} duplicate rows (${before} → ${next.length})`));
+    try{logHistory(LX('دمج حصص مكررة','Merge duplicate sessions'),`${stats.groups} ${LX('مجموعة','groups')}, -${stats.removed}, ${before} → ${next.length}`,'edit');}catch(e){}
+    crmRender();
+  }).catch(e=>{console.error(e);toast(LX('❌ فشل الدمج: ','❌ Merge failed: ')+e.message);});
+}
 function crmFreeSessions(){
-  const up=can('upload_data')?`<div class="crm-upload"><span style="font-size:12px;color:var(--primary);font-weight:600">📄 ${LX('ارفع يومياً الحصص المجانية المجدولة — والحالة تُدار من هنا (تأكيد/إلغاء) + من حجزها','Upload scheduled free sessions daily — manage status here (confirm/cancel) + who booked')}</span><button class="btn btn-primary" onclick="document.getElementById('freeFile').click()">📥 ${LX('رفع ملف الحصص','Upload sessions file')}</button></div>`:'';
+  const up=can('upload_data')?`<div class="crm-upload"><span style="font-size:12px;color:var(--primary);font-weight:600">📄 ${LX('ارفع يومياً الحصص المجانية المجدولة — والحالة تُدار من هنا (تأكيد/إلغاء) + من حجزها','Upload scheduled free sessions daily — manage status here (confirm/cancel) + who booked')}</span><button class="btn btn-primary" onclick="document.getElementById('freeFile').click()">📥 ${LX('رفع ملف الحصص','Upload sessions file')}</button>${isSuperAdmin()?`<button class="btn" onclick="crmFreeDedupeOpen()" title="${LX('دمج الصفوف المكررة لنفس الحصة','Merge duplicate rows of the same session')}">🧹 ${LX('دمج المكرر','Merge duplicates')}</button>`:''}</div>`:'';
   if(!FREE_SESSIONS.length)return up+`<div class="crm-empty">${LX('لا توجد حصص مجانية بعد — ارفع الملف','No free sessions yet — upload the file')}</div>`;
   const DF=[['-2',LX('أول أمس','2 days ago')],['-1',LX('أمس','Yesterday')],['0',LX('اليوم','Today')],['1',LX('بكرا','Tomorrow')],['all',LX('الكل','All')]];
   const dayBtns=DF.map(b=>{const val=b[0]==='all'?'all':crmDayStr(+b[0]);return `<button class="crm-subbtn ${crmState.freeDate===val||(!crmState.freeDate&&b[0]==='all')?'on':''}" onclick="crmSetFreeDate('${val}')">${b[1]}</button>`;}).join('');
