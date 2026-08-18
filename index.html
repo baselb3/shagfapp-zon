@@ -5058,6 +5058,57 @@ function crmIsConverted(f){
   if(!cu)return false;
   return (cu.txns||[]).some(t=>(t.paid||0)>0);
 }
+// ---- Duplicate-proof merge for the daily free-sessions file ----------------
+// Matching order: (1) exact Session ID (incl. IDs seen before for the same row),
+// (2) same phone + same scheduled day — the export re-issues a NEW Session ID
+// when a session is rescheduled/rebooked, which used to create a second row.
+// Anything else is a genuinely different session (another day) => new row.
+function crmFreeDayKey(v){return String(v||'').replace(' at ',' ').slice(0,10);}
+function crmFreePDKey(f){const p=crmNormPhone(f.phone),d=crmFreeDayKey(f.scheduledDate);return p?(p+'|'+d):null;}
+function crmFreeKeep(a,b){return (a===''||a==null)?(b==null?'':b):a;}
+// mode: 'both' = add new + update existing, 'update' = update existing only.
+function crmFreeMerge(current,parsed,batchId,mode){
+  const out=current.slice(),idIdx={},pdIdx={},st={added:0,updated:0,byPhone:0,skipped:0,dupInFile:0};
+  const index=(f,i)=>{
+    idIdx[String(f.sessionId)]=i;(f.altIds||[]).forEach(a=>{idIdx[String(a)]=i;});
+    const k=crmFreePDKey(f);if(k&&pdIdx[k]===undefined)pdIdx[k]=i;
+  };
+  out.forEach(index);
+  const seen={};
+  parsed.forEach(p=>{
+    const fk=String(p.sessionId||'')||crmFreePDKey(p)||'';
+    if(fk&&seen[fk])st.dupInFile++;if(fk)seen[fk]=1;
+    let i=idIdx[String(p.sessionId)],viaPhone=false;
+    if(i===undefined){const k=crmFreePDKey(p);if(k&&pdIdx[k]!==undefined){i=pdIdx[k];viaPhone=true;}}
+    if(i!==undefined){
+      const o=out[i];
+      // file status wins when definitive (confirmed/cancelled); else keep the manual one
+      const status=(p.status==='confirmed'||p.status==='cancelled')?p.status:(o.status||p.status);
+      const altIds=(o.altIds||[]).slice();
+      if(String(p.sessionId)!==String(o.sessionId)&&altIds.indexOf(String(p.sessionId))<0)altIds.push(String(p.sessionId));
+      out[i]=Object.assign({},o,p,{
+        sessionId:o.sessionId,altIds:altIds,status:status,
+        // never blank an existing value with an empty cell from the file
+        name:crmFreeKeep(p.name,o.name),email:crmFreeKeep(p.email,o.email),address:crmFreeKeep(p.address,o.address),
+        city:p.city||o.city||null,cityName:crmFreeKeep(p.cityName,o.cityName),zoneId:(p.zoneId==null?(o.zoneId==null?null:o.zoneId):p.zoneId),
+        package:crmFreeKeep(p.package,o.package),expiry:crmFreeKeep(p.expiry,o.expiry),
+        trainer:crmFreeKeep(p.trainer,o.trainer),scheduledDate:crmFreeKeep(p.scheduledDate,o.scheduledDate),
+        createdDate:crmFreeKeep(p.createdDate,o.createdDate),
+        // manual CRM work is never touched by an upload
+        notSubReason:o.notSubReason||'',calledBy:o.calledBy||'',followNote:o.followNote||'',
+        followLog:o.followLog||[],followDate:o.followDate||'',bookedBy:o.bookedBy||'',
+        _batch:o._batch||batchId
+      });
+      index(out[i],i);st.updated++;if(viaPhone)st.byPhone++;
+    }else{
+      if(mode==='update'){st.skipped++;return;}
+      const nf=Object.assign({},p,{_batch:batchId});
+      out.push(nf);index(nf,out.length-1);st.added++;
+    }
+  });
+  return {list:out,stats:st};
+}
+let _freePending=null;
 function importFreeSessions(rows){
   if(!can('upload_data')){toast(LX('ليس لديك صلاحية رفع الملفات','No permission to upload files'));crmLogUpload('free',{total:0,added:0,dupe:0,skipped:0,note:LX('محاولة بلا صلاحية','blocked: no permission')});return;}
   if(!rows||!rows.length){toast(LX('❌ ملف فارغ','❌ Empty file'));return;}
@@ -5069,22 +5120,35 @@ function importFreeSessions(rows){
   const mapStatus=s=>{s=String(s||'').toLowerCase();if(/cancel|ملغ|الغاء|الغ/.test(s))return 'cancelled';if(/complet|confirm|done|attended|مكتمل|مؤكد|تم/.test(s))return 'confirmed';return 'scheduled';};
   const batchId='b'+Date.now();
   const parsed=data.map(r=>{const g=crmGeocode(r[F.addr]||'');return {sessionId:String(r[F.sid]).trim(),phone:String(r[F.mob]).trim(),name:r[F.name]||'',email:r[F.email]||'',address:r[F.addr]||'',city:g.city||null,cityName:g.cityName||'',zoneId:(g.zoneId==null?null:g.zoneId),package:r[F.pkg]||'',expiry:String(r[F.exp]||'').slice(0,10),trainer:r[F.trainer]||'',scheduledDate:r[F.sched]||'',createdDate:r[F.cdate]||'',status:mapStatus(r[F.st]),notSubReason:'',calledBy:'',followNote:''};});
-  let before=0;
-  crmBulkFree(current=>{
-    before=current.length;
-    const map={};current.forEach(f=>map[f.sessionId]=f);
-    parsed.forEach(p=>{ if(map[p.sessionId]){const o=map[p.sessionId];
-      // file status wins when it's definitive (confirmed/cancelled); else keep manual status. Keep manual follow-up data + original batch.
-      const status=(p.status==='confirmed'||p.status==='cancelled')?p.status:(o.status||p.status);
-      map[p.sessionId]=Object.assign({},p,{status,notSubReason:o.notSubReason||'',calledBy:o.calledBy||'',followNote:o.followNote||'',followLog:o.followLog||[],followDate:o.followDate||'',bookedBy:o.bookedBy||'',_batch:o._batch||batchId});
-    } else map[p.sessionId]=Object.assign({},p,{_batch:batchId}); });
-    return Object.values(map);
-  }).then(next=>{
+  _freePending={parsed:parsed,batch:batchId};
+  const pv=crmFreeMerge(FREE_SESSIONS||[],parsed,batchId,'both').stats;
+  const row=(ic,label,val,color)=>`<div style="display:flex;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--g100)"><span>${ic} ${label}</span><b style="color:${color||'inherit'}">${val}</b></div>`;
+  openModal(`<h3>📥 ${LX('معاينة رفع الحصص المجانية','Free sessions upload — preview')}</h3>
+    <div style="font-size:13px;margin:10px 0">
+      ${row('📄',LX('صفوف صالحة في الملف','Valid rows in file'),parsed.length)}
+      ${row('🆕',LX('حصص جديدة ستُضاف','New sessions to add'),pv.added,'#065F46')}
+      ${row('♻️',LX('حصص موجودة سيتم تحديثها','Existing sessions to update'),pv.updated,'#1D4ED8')}
+      ${row('🔗',LX('منها طوبقت بالجوال + التاريخ (تغيّر Session ID)','of those matched by phone + date (Session ID changed)'),pv.byPhone,'#92400E')}
+      ${row('🔁',LX('صفوف مكررة داخل الملف نفسه','Duplicate rows inside the file'),pv.dupInFile,'#92400E')}
+    </div>
+    <div style="font-size:11px;color:var(--g400);margin-bottom:10px">${LX('لن يتكرر أي صف: المطابقة بـ Session ID ثم بنفس الجوال ونفس يوم الحصة. المتابعات والملاحظات ومن حجزها تبقى كما هي.','No row is duplicated: matched by Session ID, then by same phone + same session day. Follow-ups, notes and “booked by” are preserved.')}</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-primary" style="flex:1" onclick="crmFreeApply('both')">➕ ${LX('إضافة + تحديث','Add + update')}</button>
+      <button class="btn" style="flex:1" onclick="crmFreeApply('update')">♻️ ${LX('تحديث فقط','Update only')}</button>
+      <button class="btn" onclick="crmFreeCancel()">${LX('إلغاء','Cancel')}</button>
+    </div>`);
+}
+function crmFreeCancel(){_freePending=null;closeModal();}
+function crmFreeApply(mode){
+  if(!_freePending){closeModal();return;}
+  const {parsed,batch}=_freePending;_freePending=null;closeModal();
+  let stats=null,before=0;
+  crmBulkFree(current=>{before=current.length;const m=crmFreeMerge(current,parsed,batch,mode);stats=m.stats;return m.list;}).then(next=>{
     FREE_SESSIONS=next;
-    const addedF=next.length-before;
-    toast(LX(`✅ حصص مجانية: ${next.length} (أضيف ${addedF})`,`✅ Free sessions: ${next.length} (added ${addedF})`));
-    try{logHistory(LX('رفع حصص مجانية','Upload free sessions'),`${parsed.length} ${LX('صف','rows')}, ${LX('الإجمالي','total')} ${next.length}`,'import');}catch(e){}
-    crmLogUpload('free',{total:parsed.length,added:addedF,dupe:Math.max(0,parsed.length-addedF),skipped:0,note:'',batch:batchId});
+    toast(LX(`✅ الحصص: ${next.length} — أضيف ${stats.added}، حُدّث ${stats.updated}${mode==='update'&&stats.skipped?`، تُجوهل ${stats.skipped} جديدة`:''}`,
+             `✅ Sessions: ${next.length} — added ${stats.added}, updated ${stats.updated}${mode==='update'&&stats.skipped?`, skipped ${stats.skipped} new`:''}`));
+    try{logHistory(LX('رفع حصص مجانية','Upload free sessions'),`${parsed.length} ${LX('صف','rows')}, +${stats.added} / ~${stats.updated}${mode==='update'?' ('+LX('تحديث فقط','update only')+')':''}, ${LX('الإجمالي','total')} ${next.length}`,'import');}catch(e){}
+    crmLogUpload('free',{total:parsed.length,added:stats.added,dupe:stats.updated,skipped:stats.skipped,note:(mode==='update'?LX('تحديث فقط','update only'):'')+(stats.byPhone?` · ${LX('طوبق بالجوال+التاريخ','matched by phone+date')}: ${stats.byPhone}`:''),batch:batch});
     crmRender();
   }).catch(e=>{console.error(e);toast(LX('❌ فشل الحفظ: ','❌ Save failed: ')+e.message);});
 }
