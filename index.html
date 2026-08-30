@@ -150,6 +150,12 @@ input:focus,select:focus{outline:none;border-color:var(--primary);background:#ff
 .pill-blue{background:var(--primary-light);color:var(--primary)}
 .crm-empty{text-align:center;color:var(--g400);padding:30px;font-size:13px}
 .crm-upload{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--primary-light);border:1px solid #C7D7F0;border-radius:var(--r);padding:11px 14px;margin-bottom:14px;flex-wrap:wrap}
+/* 🏘 district (حي) name labels on the map */
+.d-label{background:rgba(255,255,255,.9);border:1px solid #C7D2E5;color:#111827;font:700 10px/1.4 inherit;padding:1px 6px;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,.12);white-space:nowrap}
+.d-label:before{display:none}
+.hide-dlabels .d-label{display:none}
+.d-chip{cursor:pointer;font-size:11px;border:1px solid var(--g200);border-radius:14px;padding:3px 9px;background:#fff}
+.d-chip.on{background:var(--primary);color:#fff;border-color:var(--primary)}
 </style>
 </head>
 <body>
@@ -180,6 +186,7 @@ input:focus,select:focus{outline:none;border-color:var(--primary);background:#ff
     <div class="map-controls">
       <button class="map-btn" onclick="locateMe()" id="btn-locate">📍 موقعي</button>
       <button class="map-btn" onclick="fitAllZones()" id="btn-fitall">🔭 عرض الكل</button>
+      <button class="map-btn" id="btn-districts" onclick="toggleDistricts()">🏘 الأحياء</button>
       <button class="map-btn" id="drawModeBtn" onclick="toggleDrawMode()" style="display:none">🔵 إضافة زون</button>
     </div>
     <div class="map-coords" id="mapCoords">—</div>
@@ -213,6 +220,7 @@ input:focus,select:focus{outline:none;border-color:var(--primary);background:#ff
       <div class="tab active" onclick="switchTab('check')" id="tl-check">🔍 تحقق</div>
       <div class="tab" onclick="switchTab('coaches')" id="tl-coaches">👩 مدربات</div>
       <div class="tab" onclick="switchTab('zones')" id="tl-zones">🔵 زونات</div>
+      <div class="tab" onclick="switchTab('districts')" id="tl-districts">🏘 أحياء</div>
       <div class="tab" onclick="switchTab('prices')" id="tl-prices">💰 أسعار</div>
       <div class="tab" onclick="switchTab('stats')" id="tl-stats">📊 إحصاء</div>
       <div class="tab" onclick="switchTab('emojis')" id="tl-emojis">😊 إيموجي</div>
@@ -277,6 +285,16 @@ input:focus,select:focus{outline:none;border-color:var(--primary);background:#ff
       </div>
       <div id="zoneListEl"></div>
       <div id="adminZoneBtns"></div>
+    </div>
+
+    <!-- DISTRICTS TAB -->
+    <div class="tab-content" id="tab-districts">
+      <div class="search-wrap" style="margin-bottom:8px">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="district-search" placeholder="ابحث باسم الحي أو المدربة..." oninput="renderDistricts()"/>
+      </div>
+      <div id="districtFilters" style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px"></div>
+      <div id="districtListEl"></div>
     </div>
 
     <!-- STATS TAB -->
@@ -461,6 +479,7 @@ input:focus,select:focus{outline:none;border-color:var(--primary);background:#ff
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="olc.js"></script>
+<script src="districts-riyadh.js"></script>
 <script>
 
 // ===================== FIREBASE INIT =====================
@@ -672,7 +691,11 @@ function applyTranslations(){
     if(el.tagName==='INPUT')el.placeholder=t(k);
     else el.textContent=t(k);
   });
+  const tld=document.getElementById('tl-districts');if(tld)tld.textContent=LX('🏘 أحياء','🏘 Districts');
+  const bdl=document.getElementById('btn-districts');if(bdl)bdl.textContent=LX('🏘 الأحياء','🏘 Districts');
+  const dse=document.getElementById('district-search');if(dse)dse.placeholder=LX('ابحث باسم الحي أو المدربة...','Search by district or trainer...');
   renderAdminButtons();renderCoaches('');renderZones();renderStats();renderEmojiLegend();
+  drawDistricts();renderDistricts();
   populateCitySelect();
   if(document.getElementById('tab-history')?.classList.contains('active'))renderHistory();
   try{if(typeof crmApplyLang==='function')crmApplyLang();}catch(e){/* CRM not initialized yet during first setLang at load */}
@@ -1549,17 +1572,25 @@ function initMap(){
   });
   map.on('click',e=>{
     if(drawMode){promptNewZone(e.latlng.lat,e.latlng.lng);return;}
-    const lat=e.latlng.lat,lng=e.latlng.lng;
-    dropPin(lat,lng);
-    document.getElementById('latIn').value=lat.toFixed(6);
-    document.getElementById('lngIn').value=lng.toFixed(6);
-    if(document.getElementById('pairIn'))document.getElementById('pairIn').value=`${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-    checkCoordsAt(lat,lng);
-    switchTab('check');
+    handleMapPoint(e.latlng.lat,e.latlng.lng);
   });
+  map.on('zoomend',updateDistrictLabels);
+  ensureCityDistricts(currentCity);
+  drawDistricts();
   drawAllZones();renderCoaches('');renderZones();renderStats();renderAdminButtons();renderEmojiLegend();
+  const bd=document.getElementById('btn-districts');if(bd)bd.classList.toggle('active-mode',showDistricts);
 }
 
+// clicking the map — or a district polygon covering it — answers the same
+// question: who serves this exact spot
+function handleMapPoint(lat,lng){
+  dropPin(lat,lng);
+  document.getElementById('latIn').value=lat.toFixed(6);
+  document.getElementById('lngIn').value=lng.toFixed(6);
+  if(document.getElementById('pairIn'))document.getElementById('pairIn').value=`${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  checkCoordsAt(lat,lng);
+  switchTab('check');
+}
 function dropPin(lat,lng){
   if(pinMarker)map.removeLayer(pinMarker);
   const icon=L.divIcon({
@@ -1574,8 +1605,11 @@ function dropPin(lat,lng){
   pinMarker=L.marker([lat,lng],{icon,zIndexOffset:1000}).addTo(map);
   const gmLink=`https://www.google.com/maps?q=${lat},${lng}&z=15`;
   const zone=findZone(lat,lng);
+  const pinDistrict=findDistrict(lat,lng,zone?(zone.cityId||'riyadh'):null);
+  const dAvail=districtCoaches(pinDistrict).filter(c=>c.available);
   const coaches=zone?COACHES.filter(c=>c.zones.includes(zone.id)&&(c.cityId||'riyadh')===(zone.cityId||'riyadh')&&c.available):[];
-  const best=[...coaches].sort((a,b)=>(a.members||0)-(b.members||0))[0];
+  // the trainer assigned to this district is the answer; the zone is the fallback
+  const best=[...(dAvail.length?dAvail:coaches)].sort((a,b)=>(a.members||0)-(b.members||0))[0];
   const popup=`<div style="font-family:inherit;min-width:215px;direction:${lang==='ar'?'rtl':'ltr'}">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
       <b style="font-size:13px;color:#0D2E6E">📍 ${t('pinLocation')}</b>
@@ -1588,7 +1622,16 @@ function dropPin(lat,lng){
       ?`<div style="font-size:12px;color:#16A34A;font-weight:700;margin-bottom:4px">✅ ${formatZoneId(zone)} — ${t('covered')}</div>`
       :`<div style="font-size:12px;color:#DC2626;font-weight:700;margin-bottom:4px">❌ ${t('notCovered')}</div>`
     }
-    ${best?`<div style="font-size:11px;color:#4B5563;margin-bottom:6px">⭐ ${t('bestCoach')}: <b>${best.name}</b> ${best.license?em('license_yes'):''}</div>`:''}
+    ${(()=>{
+      const dd=pinDistrict;
+      if(!dd)return '';
+      const dc=districtCoaches(dd),df=dc.filter(c=>c.available);
+      return `<div style="font-size:12px;font-weight:700;margin-bottom:4px">🏘 ${esc(districtLabelText(dd))}</div>
+        <div style="font-size:11px;color:${dc.length?'#4B5563':'#B91C1C'};margin-bottom:6px">${dc.length
+          ?`${LX('المدربات','Trainers')}: ${df.length}/${dc.length} — ${dc.map(c=>esc(c.name)).join('، ')}`
+          :`⚠️ ${LX('لا توجد مدربة مخصصة لهذا الحي','No trainer assigned to this district')}`}</div>`;
+    })()}
+    ${best?`<div style="font-size:11px;color:#4B5563;margin-bottom:6px">⭐ ${dAvail.length?LX('مدربة الحي','District trainer'):t('bestCoach')}: <b>${best.name}</b> ${best.license?em('license_yes'):''}</div>`:''}
     <a href="${gmLink}" target="_blank" style="display:block;font-size:11px;color:#2563EB;text-decoration:none;padding-top:5px;border-top:1px solid #F3F4F6">🗺 ${t('openGm')} ↗</a>
   </div>`;
   pinMarker.bindPopup(popup,{maxWidth:260,closeButton:false}).openPopup();
@@ -1733,8 +1776,28 @@ function checkCoords(){
   if(isNaN(lat)||isNaN(lng)){toast(t('enterCoords'));return;}
   dropPin(lat,lng);map.setView([lat,lng],13);checkCoordsAt(lat,lng);
 }
+// the district card shown in the coordinate check — the trainer who actually
+// serves this exact address, not just the zone it falls in
+function districtResultCard(d){
+  if(!d)return '';
+  const cs=districtCoaches(d);const free=cs.filter(c=>c.available);
+  const ok=free.length>0;
+  const bg=!cs.length?'#FEF2F2':ok?'#F0FDF4':'#FFF7ED';
+  const bd=!cs.length?'#FECACA':ok?'#BBF7D0':'#FED7AA';
+  const names=cs.map(c=>`<div style="font-size:11px;padding:2px 0"><span style="color:${c.available?'#16A34A':'#DC2626'}">${c.available?'●':'○'}</span> <b>${esc(c.name)}</b> <span style="color:#6B7280">— ${esc(c.hours||'')}</span></div>`).join('');
+  return `<div style="background:${bg};border:1px solid ${bd};border-radius:8px;padding:10px;margin-bottom:8px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+      <div style="font-size:10px;color:#6B7280;font-weight:700">🏘 ${LX('الحي','District')} · ${districtZoneTag(d)}</div>
+      <button class="btn btn-icon" onclick="focusDistrict('${d.id}')" title="${LX('عرض على الخريطة','Show on map')}">🎯</button>
+    </div>
+    <div style="font-size:15px;font-weight:800">${esc(districtLabelText(d))}</div>
+    <div style="font-size:11px;color:#374151;margin:4px 0 2px;font-weight:700">${LX('المدربات المخصصات','Assigned trainers')}: ${free.length}/${cs.length}</div>
+    ${cs.length?names:`<div style="font-size:11px;color:#B91C1C">⚠️ ${LX('لا توجد مدربة مخصصة لهذا الحي','No trainer is assigned to this district')}</div>`}
+  </div>`;
+}
 function checkCoordsAt(lat,lng){
   const zone=findZone(lat,lng);
+  const inDistrict=findDistrict(lat,lng,zone?(zone.cityId||'riyadh'):null);
   const el=document.getElementById('checkResult');
   const gmLink=`https://www.google.com/maps?q=${lat},${lng}&z=15`;
   if(!zone){
@@ -1743,13 +1806,16 @@ function checkCoordsAt(lat,lng){
       <div style="font-size:11px;color:#B91C1C">${t('outsideMsg')}</div></div></div>
       <div class="result-body">
         <div style="font-size:12px;color:#6B7280;margin-bottom:8px;font-family:monospace">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+        ${districtResultCard(inDistrict)}
         <a href="${gmLink}" target="_blank" class="btn btn-full" style="font-size:12px;text-decoration:none;color:#2563EB;border-color:#BFDBFE">🗺 ${t('openGm')}</a>
       </div></div>`;
     return;
   }
   const coaches=COACHES.filter(c=>c.zones.includes(zone.id)&&(c.cityId||'riyadh')===(zone.cityId||'riyadh'));
   const avail=coaches.filter(c=>c.available);
-  const best=[...avail].sort((a,b)=>(a.members||0)-(b.members||0))[0];
+  const dAvail=districtCoaches(inDistrict).filter(c=>c.available);
+  // whoever is assigned to the district serves it — the zone list is the fallback
+  const best=[...(dAvail.length?dAvail:avail)].sort((a,b)=>(a.members||0)-(b.members||0))[0];
   const zGm=`https://www.google.com/maps?q=${zone.lat},${zone.lng}&z=13`;
   const zoneCity=CITIES.find(c=>c.id===(zone.cityId||'riyadh'));
   let html=`<div class="result-card"><div class="result-header covered"><span style="font-size:20px">✅</span>
@@ -1760,14 +1826,15 @@ function checkCoordsAt(lat,lng){
       <div style="display:flex;gap:5px;margin-bottom:10px;flex-wrap:wrap">
         <a href="${gmLink}" target="_blank" class="btn" style="font-size:11px;text-decoration:none;color:#2563EB">📍 ${t('clientLoc')}</a>
         <a href="${zGm}" target="_blank" class="btn" style="font-size:11px;text-decoration:none;color:#0D2E6E">🔵 ${formatZoneId(zone)}</a>
-      </div>`;
+      </div>
+      ${districtResultCard(inDistrict)}`;
   if(best){
     const se=(best.sports||[]).map(s=>em(SPORT_KEY_MAP[s]||'sport_cardio')).join(' ');
     const ee=best.empType==='fulltime'?em('fulltime'):best.empType==='parttime'?em('parttime'):em('freelancer');
     const el2=best.empType==='fulltime'?t('fulltime'):best.empType==='parttime'?t('parttime'):t('freelancer');
     const licInfo=best.license?`${em('license_yes')} ${lang==='ar'?'رخصة':'Licensed'}`:`${em('license_no')} ${lang==='ar'?'بدون رخصة':'No license'}`;
     html+=`<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:10px;margin-bottom:8px">
-      <div style="font-size:10px;color:#15803D;font-weight:700;margin-bottom:3px">⭐ ${t('bestCoach')}</div>
+      <div style="font-size:10px;color:#15803D;font-weight:700;margin-bottom:3px">⭐ ${dAvail.length?LX('مدربة الحي','District trainer'):t('bestCoach')}</div>
       <div style="font-size:15px;font-weight:800;color:#166534">${best.name}</div>
       <div style="font-size:11px;color:#4B5563;margin-top:4px;line-height:1.9">
         ${em('team')} ${best.team} | ${em('hours')} ${best.hours} | ${em('dayoff')} ${formatDays(best.dayOff)}<br>
@@ -1906,7 +1973,7 @@ function renderCoaches(q){
         ${c.license?`<span class="badge badge-green">${em('license_yes')} ${lang==='ar'?'رخصة':'Licensed'}</span>`:`<span class="badge badge-gray">${em('license_no')} ${lang==='ar'?'بدون رخصة':'No License'}</span>`}<br>
         ${em('hours')} ${c.hours} · ${em('dayoff')} ${formatDays(c.dayOff)} · ${em('members')} ${c.members??'-'}<br>
         ${em('nationality')} ${c.nationality||'—'}<br>
-        ${em('zone')} ${zoneLabels}
+        ${em('zone')} ${zoneLabels}${(c.districts||[]).length?` · 🏘 ${(c.districts||[]).length} ${lang==='ar'?'حي':'districts'}`:''}
       </div></div>`;
   }).join('');
 }
@@ -2055,6 +2122,7 @@ function showCoachDetail(idx){
     ${row(lang==='ar'?'الفريق':'Team', esc(c.team||'—'))}
     ${row(lang==='ar'?'المدينة':'City', city?(lang==='ar'?city.ar:city.en):'—')}
     ${row(lang==='ar'?'الزونات':'Zones', zoneLabels)}
+    ${row(lang==='ar'?'الأحياء':'Districts', (c.districts||[]).length?(c.districts||[]).map(id=>{const d=districtById(id);return d?esc(districtLabelText(d)):String(id);}).join('، '):'—')}
     ${row(lang==='ar'?'نوع الدوام':'Employment', c.empType==='fulltime'?t('fulltime'):c.empType==='parttime'?t('parttime'):t('freelancer'))}
     ${row(lang==='ar'?'ساعات العمل':'Hours', esc(c.hours||'—'))}
     ${row(lang==='ar'?'يوم الإجازة':'Day off', formatDays(c.dayOff))}
@@ -2093,6 +2161,251 @@ function showZoneCoaches(zoneKey,cityId){
     ${isSuperAdmin()?`<div style="display:flex;gap:6px;margin-top:10px"><button class="btn btn-full" onclick="openEditZone(${ZONES.indexOf(z)});closeZonePanel()">✏️ ${lang==='ar'?'تعديل الزون':'Edit zone'}</button></div>`:''}`;
   p.dataset.open='1';requestAnimationFrame(()=>{p.style.transform='translateX(0)';});
 }
+// ===================== DISTRICTS (الأحياء) =====================
+// The district is the unit a trainer actually serves: a real municipal
+// boundary, not a circle. Geometry is READ-ONLY reference data loaded from
+// districts-<city>.js and is never written to Firestore; the only stored fact
+// is the assignment, kept on the coach exactly like zones:
+//     coach.districts = [districtId, …]
+let districtLayers=[];        // {d, poly}
+let showDistricts=true;       // map layer on/off
+let districtFilter='all';     // all | none | free | busy
+const DISTRICT_LABEL_ZOOM=12; // labels appear from this zoom in
+
+function districtsMap(){return window.DISTRICTS_BY_CITY||{};}
+// Riyadh ships in the page; every other city's boundaries are fetched the first
+// time that city is selected (districts-<cityId>.js). A missing file is fine —
+// the city simply has no districts yet.
+const _dLoad={riyadh:'done'};
+function ensureCityDistricts(cityId){
+  if(!cityId)return;
+  if(cityId==='all'){CITIES.forEach(c=>ensureCityDistricts(c.id));return;}
+  if(_dLoad[cityId])return;
+  _dLoad[cityId]='loading';
+  const sc=document.createElement('script');
+  sc.src='districts-'+cityId+'.js';
+  sc.onload=()=>{_dLoad[cityId]='done';drawDistricts();renderDistricts();renderStats();};
+  sc.onerror=()=>{_dLoad[cityId]='missing';};
+  document.head.appendChild(sc);
+}
+function cityDistricts(cityId){
+  const list=districtsMap()[cityId]||[];
+  list.forEach(d=>{if(!d.cityId)d.cityId=cityId;});
+  return list;
+}
+function allDistricts(){return Object.keys(districtsMap()).reduce((a,cid)=>a.concat(cityDistricts(cid)),[]);}
+function filteredDistricts(){return currentCity==='all'?allDistricts():cityDistricts(currentCity);}
+function districtLabelText(d){return lang==='ar'?(d.ar||d.en||''):(d.en||d.ar||'');}
+function districtById(id){return allDistricts().find(d=>String(d.id)===String(id))||null;}
+function districtCoaches(d){
+  if(!d)return [];
+  return COACHES.filter(c=>(c.districts||[]).map(String).includes(String(d.id)));
+}
+function districtColor(d){
+  const cs=districtCoaches(d);
+  if(!cs.length)return '#9CA3AF';
+  return cs.some(c=>c.available)?'#16A34A':'#DC2626';
+}
+// the zone this district belongs to (the zone circle its centre falls in)
+function districtZone(d){
+  let best=null,bd=Infinity;
+  ZONES.forEach(z=>{
+    if((z.cityId||'riyadh')!==(d.cityId||'riyadh'))return;
+    const dist=haversine(d.c[0],d.c[1],z.lat,z.lng);
+    if(dist<=(z.radius||5)&&dist<bd){bd=dist;best=z;}
+  });
+  return best;
+}
+function districtNearestZone(d){
+  let best=null,bd=Infinity;
+  ZONES.forEach(z=>{
+    if((z.cityId||'riyadh')!==(d.cityId||'riyadh'))return;
+    const dist=haversine(d.c[0],d.c[1],z.lat,z.lng);
+    if(dist<bd){bd=dist;best=z;}
+  });
+  return best?{z:best,dist:bd}:null;
+}
+// short zone tag for a district: "R-9" when inside, "≈R-9" when it is only the nearest
+function districtZoneTag(d){
+  const z=districtZone(d);
+  if(z)return formatZoneId(z);
+  const n=districtNearestZone(d);
+  return n?`≈${formatZoneId(n.z)} (${n.dist.toFixed(1)}${t('km')})`:LX('خارج الزونات','outside zones');
+}
+// point-in-polygon (ray casting) — ring points are [lat,lng]
+function pointInRing(lat,lng,ring){
+  let inside=false;
+  for(let i=0,j=ring.length-1;i<ring.length;j=i++){
+    const yi=ring[i][0],xi=ring[i][1],yj=ring[j][0],xj=ring[j][1];
+    if(((yi>lat)!==(yj>lat))&&(lng<(xj-xi)*(lat-yi)/((yj-yi)||1e-12)+xi))inside=!inside;
+  }
+  return inside;
+}
+function findDistrict(lat,lng,cityId){
+  const list=cityId?cityDistricts(cityId):allDistricts();
+  return list.find(d=>d.b.some(r=>pointInRing(lat,lng,r)))||null;
+}
+
+// ---------- map layer ----------
+function toggleDistricts(){
+  showDistricts=!showDistricts;
+  const b=document.getElementById('btn-districts');
+  if(b)b.classList.toggle('active-mode',showDistricts);
+  drawDistricts();
+}
+function drawDistricts(){
+  districtLayers.forEach(o=>{try{map.removeLayer(o.poly);}catch(e){}});
+  districtLayers=[];
+  if(!map||!showDistricts)return;
+  filteredDistricts().forEach(d=>{
+    const cs=districtCoaches(d);const col=districtColor(d);
+    const base=cs.length?.20:.06;
+    const poly=L.polygon(d.b,{color:col,weight:1.2,opacity:.85,fillColor:col,fillOpacity:base,
+      dashArray:cs.length?null:'3,3',bubblingMouseEvents:false}).addTo(map);
+    poly.on('click',e=>{L.DomEvent.stopPropagation(e);if(drawMode){promptNewZone(e.latlng.lat,e.latlng.lng);return;}handleMapPoint(e.latlng.lat,e.latlng.lng);});
+    poly.on('mouseover',()=>poly.setStyle({fillOpacity:base+.14,weight:2.2}));
+    poly.on('mouseout',()=>poly.setStyle({fillOpacity:base,weight:1.2}));
+    poly.bindTooltip(districtLabelText(d),{permanent:true,direction:'center',className:'d-label',opacity:1});
+    districtLayers.push({d,poly});
+  });
+  updateDistrictLabels();
+}
+// 189 permanent labels are unreadable when zoomed out — hide them by CSS class
+function updateDistrictLabels(){
+  if(!map)return;
+  map.getContainer().classList.toggle('hide-dlabels',map.getZoom()<DISTRICT_LABEL_ZOOM);
+}
+function focusDistrict(id){
+  const d=districtById(id);if(!d||!map)return;
+  if(!showDistricts)toggleDistricts();
+  const layer=districtLayers.find(o=>String(o.d.id)===String(id));
+  if(layer)map.fitBounds(layer.poly.getBounds(),{padding:[40,40],maxZoom:14});
+  else map.setView(d.c,13);
+  showDistrictPopup(d,d.c);
+}
+// popup card: name, coverage, coordinates, zone, assigned trainers
+function showDistrictPopup(d,latlng){
+  const cs=districtCoaches(d);const free=cs.filter(c=>c.available);
+  const z=districtZone(d);
+  const gm=`https://www.google.com/maps?q=${d.c[0]},${d.c[1]}&z=14`;
+  const state=!cs.length?`<span style="font-size:10px;color:#B91C1C;background:#FEE2E2;padding:1px 6px;border-radius:8px">${LX('بدون مدربة','unassigned')}</span>`
+    :free.length?`<span style="font-size:10px;color:#166534;background:#DCFCE7;padding:1px 6px;border-radius:8px">${LX('مغطّى','covered')}</span>`
+    :`<span style="font-size:10px;color:#9A3412;background:#FFEDD5;padding:1px 6px;border-radius:8px">${LX('غير متاح حالياً','no one available')}</span>`;
+  const list=cs.length?cs.map(c=>{
+      const ri=COACHES.indexOf(c);
+      return `<div style="display:flex;align-items:center;gap:5px;padding:3px 0;border-bottom:1px solid #F3F4F6;font-size:11px">
+        <span style="color:${c.available?'#16A34A':'#DC2626'}">${c.available?'●':'○'}</span>
+        <span style="font-weight:700">${esc(c.name)}</span>
+        <span style="color:#6B7280">— ${esc(c.hours||'')}</span>
+        <button onclick="showCoachDetail(${ri})" style="margin-inline-start:auto;border:1px solid #E5E7EB;background:#fff;border-radius:5px;cursor:pointer;padding:1px 5px">👁</button>
+      </div>`;}).join('')
+    :`<div style="font-size:11px;color:#DC2626;padding:4px 0">⚠️ ${LX('لا توجد مدربة مخصصة لهذا الحي','No trainer assigned to this district')}</div>`;
+  const html=`<div style="direction:${lang==='ar'?'rtl':'ltr'};min-width:225px">
+    <div style="display:flex;align-items:center;gap:6px"><b style="font-size:13px;color:var(--primary)">🏘 ${esc(districtLabelText(d))}</b>${state}</div>
+    <div style="font-size:11px;color:#6B7280;margin:4px 0">${d.c[0].toFixed(5)}, ${d.c[1].toFixed(5)} · ${districtZoneTag(d)}</div>
+    <div style="font-size:12px;font-weight:700;margin:6px 0 3px">${LX('المدربات','Trainers')}: ${free.length} ${LX('متاحة','free')} / ${cs.length} ${LX('إجمالي','total')}</div>
+    ${list}
+    <div style="display:flex;gap:6px;align-items:center;margin-top:7px">
+      <a href="${gm}" target="_blank" style="font-size:11px;color:#2563EB;text-decoration:none">🗺 ${t('openGm')} ↗</a>
+      ${can('edit_coaches')?`<button onclick="openDistrictAssign('${d.id}')" style="margin-inline-start:auto;padding:3px 9px;font-size:11px;border:1px solid var(--primary);color:var(--primary);background:#fff;border-radius:5px;cursor:pointer">✏️ ${LX('تخصيص مدربات','Assign trainers')}</button>`:''}
+    </div>
+  </div>`;
+  L.popup({maxWidth:300}).setLatLng(latlng||d.c).setContent(html).openOn(map);
+}
+
+// ---------- assignment ----------
+function openDistrictAssign(id){
+  if(!can('edit_coaches')){toast(LX('ليس لديك صلاحية تعديل المدربات','No permission to edit coaches'));return;}
+  const d=districtById(id);if(!d)return;
+  const z=districtZone(d);
+  const cityCoaches=COACHES.filter(c=>(c.cityId||'riyadh')===(d.cityId||'riyadh'));
+  // the coaches already covering the zone come first — they are the likely pick
+  const inZone=c=>z&&(c.zones||[]).map(String).includes(String(z.id));
+  cityCoaches.sort((a,b)=>(inZone(b)?1:0)-(inZone(a)?1:0)||String(a.name).localeCompare(String(b.name)));
+  const rows=cityCoaches.map(c=>{
+    const on=(c.districts||[]).map(String).includes(String(d.id));
+    const ri=COACHES.indexOf(c);
+    return `<label style="display:flex;align-items:center;gap:7px;padding:6px 4px;border-bottom:1px solid var(--g100);cursor:pointer">
+      <input type="checkbox" class="dassign" value="${ri}" ${on?'checked':''} style="width:15px;height:15px"/>
+      <span style="color:${c.available?'#16A34A':'#DC2626'}">${c.available?'●':'○'}</span>
+      <span style="font-size:12px;font-weight:600">${esc(c.name)}</span>
+      <span style="font-size:10px;color:var(--g500)">${esc(c.team||'')}${inZone(c)?' · '+formatZoneId(z):''}</span>
+      <span style="margin-inline-start:auto;font-size:10px;color:var(--g400)">${(c.districts||[]).length} ${LX('حي','districts')}</span>
+    </label>`;}).join('');
+  openModal(`<h3>🏘 ${esc(districtLabelText(d))}</h3>
+    <div style="font-size:11px;color:var(--g600);margin-bottom:8px">${LX('اختر المدربات اللواتي يخدمن هذا الحي','Pick the trainers who serve this district')}${z?` · ${formatZoneId(z)}`:''}</div>
+    <div style="max-height:46vh;overflow:auto;border:1px solid var(--g200);border-radius:8px;padding:4px 8px">${rows||`<div style="font-size:12px;color:var(--g400);padding:8px">${LX('لا توجد مدربات في هذه المدينة','No coaches in this city')}</div>`}</div>
+    <div class="form-row" style="margin-top:10px"><button class="btn btn-success btn-full" onclick="saveDistrictAssign('${d.id}')">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);
+}
+async function saveDistrictAssign(id){
+  if(!can('edit_coaches')){toast(LX('ليس لديك صلاحية تعديل المدربات','No permission to edit coaches'));return;}
+  const d=districtById(id);if(!d)return;
+  const picked=[...document.querySelectorAll('#modalBox .dassign')].filter(cb=>cb.checked).map(cb=>parseInt(cb.value,10));
+  const all=[...document.querySelectorAll('#modalBox .dassign')].map(cb=>parseInt(cb.value,10));
+  all.forEach(ri=>{
+    const c=COACHES[ri];if(!c)return;
+    const ds=(c.districts||[]).map(String).filter(x=>x!==String(d.id));
+    if(picked.includes(ri))ds.push(String(d.id));
+    c.districts=ds;
+  });
+  await saveOnly('coaches');
+  drawDistricts();renderCoaches('');renderDistricts();renderStats();
+  logHistory(LX('تخصيص أحياء','District Assignment'),
+    districtLabelText(d)+' — '+picked.length+' '+LX('مدربة','trainers'),'edit');
+  closeModal();toast(LX('✅ تم حفظ التخصيص','✅ Assignment saved'));
+}
+
+// ---------- districts tab ----------
+function districtStats(list){
+  const covered=list.filter(d=>districtCoaches(d).some(c=>c.available)).length;
+  const busy=list.filter(d=>{const cs=districtCoaches(d);return cs.length&&!cs.some(c=>c.available);}).length;
+  return {total:list.length,covered,busy,none:list.length-covered-busy};
+}
+function setDistrictFilter(f){districtFilter=f;renderDistricts();}
+function renderDistricts(){
+  const box=document.getElementById('districtListEl');if(!box)return;
+  const qel=document.getElementById('district-search');const q=(qel?qel.value:'').trim().toLowerCase();
+  const list=filteredDistricts();
+  const st=districtStats(list);
+  const fbox=document.getElementById('districtFilters');
+  if(fbox){
+    const chip=(k,label,n)=>`<span class="d-chip ${districtFilter===k?'on':''}" onclick="setDistrictFilter('${k}')">${label} ${n}</span>`;
+    fbox.innerHTML=chip('all',LX('الكل','All'),st.total)+chip('free',LX('🟢 مغطّاة','🟢 Covered'),st.covered)
+      +chip('busy',LX('🔴 غير متاحة','🔴 Unavailable'),st.busy)+chip('none',LX('⚪ بدون مدربة','⚪ Unassigned'),st.none);
+  }
+  const rows=list.filter(d=>{
+    const cs=districtCoaches(d);
+    if(districtFilter==='free'&&!cs.some(c=>c.available))return false;
+    if(districtFilter==='busy'&&!(cs.length&&!cs.some(c=>c.available)))return false;
+    if(districtFilter==='none'&&cs.length)return false;
+    if(q){
+      const hit=String(d.ar||'').toLowerCase().includes(q)||String(d.en||'').toLowerCase().includes(q)
+        ||cs.some(c=>String(c.name||'').toLowerCase().includes(q));
+      if(!hit)return false;
+    }
+    return true;
+  }).map(d=>{
+    const cs=districtCoaches(d);const free=cs.filter(c=>c.available);
+    const col=districtColor(d);
+    return `<div class="zone-card" style="flex-direction:column;align-items:stretch">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <div style="width:10px;height:10px;border-radius:50%;background:${col};flex-shrink:0"></div>
+          <div style="min-width:0">
+            <div style="font-size:13px;font-weight:700">${esc(districtLabelText(d))}</div>
+            <div style="font-size:10px;color:#6B7280">${districtZoneTag(d)} · 👥 ${free.length}/${cs.length}</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:3px;flex-shrink:0">
+          <button class="btn btn-icon" onclick="focusDistrict('${d.id}')" title="${LX('عرض على الخريطة','Show on map')}">🎯</button>
+          ${can('edit_coaches')?`<button class="btn btn-icon" onclick="openDistrictAssign('${d.id}')" title="${LX('تخصيص مدربات','Assign trainers')}">✏️</button>`:''}
+        </div>
+      </div>
+      ${cs.length?`<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--g200);font-size:11px;line-height:1.8">${cs.map(c=>`<span style="color:${c.available?'#16A34A':'#DC2626'}">●</span> ${esc(c.name)}`).join(' · ')}</div>`:''}
+    </div>`;
+  }).join('');
+  box.innerHTML=rows||`<div class="empty-state">—</div>`;
+}
 // ===================== STATS =====================
 function renderStats(){
   const el=document.getElementById('statsEl');if(!el)return;
@@ -2111,6 +2424,7 @@ function renderStats(){
   const noLic=coachesInScope.filter(c=>!c.license).length;
   const sc={};coachesInScope.forEach(c=>(c.sports||[]).forEach(s=>{sc[s]=(sc[s]||0)+1;}));
   const top=Object.entries(sc).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const dst=districtStats(filteredDistricts());
   const cityName=currentCity==='all'?(lang==='ar'?'كل المدن':'All Cities'):(()=>{const c=CITIES.find(c=>c.id===currentCity);return c?(lang==='ar'?c.ar:c.en):'';})();
   el.innerHTML=`
     <div style="text-align:center;font-size:11px;color:var(--primary);background:var(--primary-light);padding:6px;border-radius:6px;margin-bottom:10px">
@@ -2120,6 +2434,12 @@ function renderStats(){
       <div class="stat-box"><div class="stat-num">${zonesInScope.length}</div><div class="stat-label">${t('statZones')}</div></div>
       <div class="stat-box"><div class="stat-num" style="color:#16A34A">${cv}</div><div class="stat-label">${t('statCovered')}</div></div>
       <div class="stat-box"><div class="stat-num" style="color:#DC2626">${zonesInScope.length-cv}</div><div class="stat-label">${t('statUncovered')}</div></div>
+    </div>
+    <div class="section-title">🏘 ${LX('تغطية الأحياء','District coverage')}</div>
+    <div class="stat-row">
+      <div class="stat-box"><div class="stat-num">${dst.total}</div><div class="stat-label">${LX('حي','districts')}</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:#16A34A">${dst.covered}</div><div class="stat-label">${LX('مغطّاة','covered')}</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:#9CA3AF">${dst.none}</div><div class="stat-label">${LX('بدون مدربة','unassigned')}</div></div>
     </div>
     <div class="stat-row">
       <div class="stat-box"><div class="stat-num">${tc}</div><div class="stat-label">${t('statCoaches')}</div></div>
@@ -2549,7 +2869,9 @@ async function applyImport(type,mode,data){
   if(type==='coaches'){
     data.forEach(c=>{
       const idx=COACHES.findIndex(x=>x.name===c.name||(x.id&&x.id===c.id));
-      if(idx>=0)COACHES[idx]=c; else COACHES.push(c);
+      // the coaches sheet has no districts column — keep the existing assignment
+      if(idx>=0){if(!c.districts&&(COACHES[idx].districts||[]).length)c.districts=COACHES[idx].districts;COACHES[idx]=c;}
+      else COACHES.push(c);
     });
   }else if(type==='zones'){
     data.forEach(z=>{
@@ -2740,6 +3062,55 @@ function sportsCheckboxes(selected){
 function cityOptions(selectedId){
   return CITIES.map(c=>`<option value="${c.id}" ${c.id===(selectedId||'riyadh')?'selected':''}>${c.code}- ${lang==='ar'?c.ar:c.en}</option>`).join('');
 }
+
+// ---------- coach form: which districts this trainer serves ----------
+// Chips, not checkboxes — saveCoach() reads every checkbox in the modal as a sport.
+function coachDistrictPicker(c){
+  const sel=(c?.districts||[]).map(String);
+  return `<div class="form-section">
+    <label class="form-label">🏘 ${LX('الأحياء التي تخدمها','Districts served')} <span id="m-d-count" style="color:var(--primary)">(${sel.length})</span></label>
+    <input type="hidden" id="m-districts" value="${sel.join(',')}"/>
+    <input type="text" id="m-d-search" placeholder="${LX('ابحث عن حي…','Search a district…')}" oninput="renderCoachDistrictOptions()" style="margin-bottom:6px"/>
+    <div id="m-d-list" style="max-height:150px;overflow:auto;border:1px solid var(--g200);border-radius:6px;padding:7px;background:var(--g50);display:flex;flex-wrap:wrap;gap:5px"></div>
+    <div style="font-size:10px;color:var(--g500);margin-top:3px">${LX('تظهر أولاً أحياء الزونات المكتوبة فوق — اكتب للبحث في باقي أحياء المدينة','Districts inside the zones above are listed first — type to search the rest of the city')}</div>
+  </div>`;
+}
+function renderCoachDistrictOptions(){
+  const box=document.getElementById('m-d-list');const hid=document.getElementById('m-districts');
+  if(!box||!hid)return;
+  const sel=(hid.value||'').split(',').filter(Boolean);
+  const cityId=document.getElementById('m-city')?.value||'riyadh';
+  const q=(document.getElementById('m-d-search')?.value||'').trim().toLowerCase();
+  const zoneIds=(document.getElementById('m-zones')?.value||'').split(',').map(x=>x.trim()).filter(Boolean).map(String);
+  const all=cityDistricts(cityId);
+  let list;
+  if(q){
+    list=all.filter(d=>String(d.ar||'').toLowerCase().includes(q)||String(d.en||'').toLowerCase().includes(q));
+  }else{
+    // no search: the districts closest to the zones the trainer already covers,
+    // selected ones always first
+    const centers=ZONES.filter(z=>(z.cityId||'riyadh')===cityId&&zoneIds.includes(String(z.id)));
+    const dist=d=>centers.length?Math.min(...centers.map(z=>haversine(d.c[0],d.c[1],z.lat,z.lng))):0;
+    list=all.slice().sort((a,b)=>{
+      const sa=sel.includes(String(a.id))?0:1,sb=sel.includes(String(b.id))?0:1;
+      if(sa!==sb)return sa-sb;
+      return centers.length?dist(a)-dist(b):String(a.ar||'').localeCompare(String(b.ar||''),'ar');
+    }).slice(0,60);
+  }
+  const cnt=document.getElementById('m-d-count');if(cnt)cnt.textContent='('+sel.length+')';
+  box.innerHTML=list.slice(0,120).map(d=>{
+    const on=sel.includes(String(d.id));
+    return `<span class="d-chip ${on?'on':''}" onclick="toggleCoachDistrict('${d.id}')">${on?'✓ ':''}${esc(districtLabelText(d))}</span>`;
+  }).join('')||`<span style="font-size:11px;color:var(--g400)">${LX('لا نتائج','No results')}</span>`;
+}
+function toggleCoachDistrict(id){
+  const hid=document.getElementById('m-districts');if(!hid)return;
+  const sel=(hid.value||'').split(',').filter(Boolean);
+  const i=sel.indexOf(String(id));
+  if(i>=0)sel.splice(i,1);else sel.push(String(id));
+  hid.value=sel.join(',');
+  renderCoachDistrictOptions();
+}
 function coachForm(c){
   const teamVal=c?.team||'';
   return `
@@ -2752,7 +3123,7 @@ function coachForm(c){
         <select id="m-team">${teamOptions(teamVal)}</select>
       </div>
       <div><label class="form-label">🏙 ${lang==='ar'?'المدينة':'City'}</label>
-        <select id="m-city">${cityOptions(c?.cityId)}</select>
+        <select id="m-city" onchange="renderCoachDistrictOptions()">${cityOptions(c?.cityId)}</select>
       </div>
     </div>
     <div class="form-grid form-section">
@@ -2786,7 +3157,8 @@ function coachForm(c){
         </select>
       </div>
     </div>
-    <div class="form-section"><label class="form-label">${t('zones')}</label><input id="m-zones" placeholder="1,2,10" value="${(c?.zones||[]).join(',')}"/></div>
+    <div class="form-section"><label class="form-label">${t('zones')}</label><input id="m-zones" placeholder="1,2,10" value="${(c?.zones||[]).join(',')}" oninput="renderCoachDistrictOptions()"/></div>
+    ${coachDistrictPicker(c)}
     <div class="form-section"><label class="form-label">${t('status')}</label>
       <select id="m-avail">
         <option value="true" ${(c?.available!==false)?'selected':''}>${em('available')} ${t('available')}</option>
@@ -2797,8 +3169,8 @@ function coachForm(c){
       <div style="background:var(--g50);border-radius:6px;padding:8px;border:1px solid var(--g200)">${sportsCheckboxes(c?.sports||[])}</div>
     </div>`;
 }
-function openAddCoach(){openModal(`<h3>${t('addCoach')}</h3>${coachForm(null)}<div class="form-row"><button class="btn btn-success btn-full" onclick="saveCoach(-1)">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);}
-function openEditCoach(idx){openModal(`<h3>✏️ ${COACHES[idx].name}</h3>${coachForm(COACHES[idx])}<div class="form-row"><button class="btn btn-success btn-full" onclick="saveCoach(${idx})">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);}
+function openAddCoach(){openModal(`<h3>${t('addCoach')}</h3>${coachForm(null)}<div class="form-row"><button class="btn btn-success btn-full" onclick="saveCoach(-1)">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);renderCoachDistrictOptions();}
+function openEditCoach(idx){openModal(`<h3>✏️ ${COACHES[idx].name}</h3>${coachForm(COACHES[idx])}<div class="form-row"><button class="btn btn-success btn-full" onclick="saveCoach(${idx})">${t('save')}</button><button class="btn btn-full" onclick="closeModal()">${t('cancel')}</button></div>`);renderCoachDistrictOptions();}
 async function saveCoach(idx){
   const name=document.getElementById('m-name').value.trim();
   if(!name){toast(t('enterName'));return;}
@@ -2818,11 +3190,12 @@ async function saveCoach(idx){
     team:teamName,teamId,nationality:document.getElementById('m-nat').value||'',
     hours,dayOff,members:parseInt(document.getElementById('m-members').value)||null,
     empType:document.getElementById('m-emp').value,zones,sports,
+    districts:(document.getElementById('m-districts')?.value||'').split(',').filter(Boolean),
     cityId:document.getElementById('m-city')?.value||'riyadh',
     license:document.getElementById('m-license')?.value==='true',
     available:document.getElementById('m-avail').value==='true'};
   if(idx===-1)COACHES.push(obj);else COACHES[idx]=obj;
-  await saveOnly('coaches');drawAllZones();renderCoaches('');renderStats();
+  await saveOnly('coaches');drawAllZones();drawDistricts();renderCoaches('');renderStats();renderDistricts();
   logHistory(
     idx===-1?(lang==='ar'?'إضافة مدربة':'Coach Added'):(lang==='ar'?'تعديل مدربة':'Coach Edited'),
     obj.name+' — '+obj.team+' — Zone: '+(obj.zones.join(',')||'—'),
@@ -2938,6 +3311,7 @@ function switchTab(t2){
   const el=document.getElementById('tab-'+t2);if(el)el.classList.add('active');
   if(t2==='coaches')renderCoaches('');
   if(t2==='zones')renderZones();
+  if(t2==='districts')renderDistricts();
   if(t2==='stats')renderStats();
   if(t2==='emojis')renderEmojiLegend();
   if(t2==='history')renderHistory();
@@ -3032,13 +3406,14 @@ function populateCitySelect(){
 }
 function switchCity(cityId){
   currentCity=cityId;
+  ensureCityDistricts(cityId);
   saveOnly('config');
   // Center map on the city if specific city selected
   if(map&&cityId!=='all'){
     const city=CITIES.find(c=>c.id===cityId);
     if(city)map.setView([city.lat,city.lng],11);
   }
-  drawAllZones();renderCoaches('');renderZones();renderStats();renderCities();
+  drawDistricts();drawAllZones();renderCoaches('');renderZones();renderStats();renderCities();renderDistricts();
 }
 
 // Format zone id with city prefix, e.g. "R-1" (Riyadh) "J-5" (Jeddah)
